@@ -3,6 +3,12 @@ import { h, replace, toast } from '../dom.ts';
 import { errorBox, field } from '../components.ts';
 import { navigate, refreshSession, session } from '../app.ts';
 
+/** Where to go after signing in: a same-site path from ?next=, else the dashboard. */
+export function nextPath() {
+  const n = new URLSearchParams(location.search).get('next') ?? '/';
+  return n.startsWith('/') && !n.startsWith('//') && !n.startsWith('/login') ? n : '/';
+}
+
 function card(title: string, sub: string, ...body: (Node | null)[]) {
   return h('section', { class: 'auth-card' }, h('h1', null, title), h('p', { class: 'lede' }, sub), ...body);
 }
@@ -21,7 +27,7 @@ export function loginView(root: HTMLElement) {
   const { f, btn } = form(async (fd, msg) => {
     try {
       await post('/api/auth/login', { email: fd.get('email'), password: fd.get('password') });
-      await refreshSession(); navigate('/');
+      await refreshSession(); navigate(nextPath());
     } catch (e) {
       if (e instanceof ApiError && e.code === 'email_not_verified') {
         replace(msg, h('div', { class: 'notice warn' }, h('p', null, e.message), h('button', { type: 'button', class: 'secondary small', on: { click: async () => { await post('/api/auth/resend-verification', { email: fd.get('email') }); toast('Verification email sent'); } } }, 'Send a new link')));

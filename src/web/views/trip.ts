@@ -4,10 +4,11 @@ import { extLink, fmtDate, fmtDateTime, fmtMoney, h, hrs, replace, toast } from 
 import { badge, errorBox, field, loading, placePicker } from '../components.ts';
 import { navigate } from '../app.ts';
 import { bookingPanel } from './booking.ts';
+import { bookTab } from './book.ts';
 import type { Place } from '../../shared/types.ts';
 
-type Tab = 'plan' | 'discover' | 'flights' | 'stays' | 'flex' | 'bookings' | 'reminders';
-const TABS: [Tab, string][] = [['plan', 'Itinerary'], ['discover', 'Destinations'], ['flights', 'Flights'], ['stays', 'Stays'], ['flex', 'Flexible dates'], ['bookings', 'Bookings'], ['reminders', 'Reminders']];
+type Tab = 'book' | 'plan' | 'discover' | 'flights' | 'stays' | 'flex' | 'bookings' | 'reminders';
+const TABS: [Tab, string][] = [['book', 'Book everything'], ['plan', 'Itinerary'], ['discover', 'Destinations'], ['flights', 'Flights'], ['stays', 'Stays'], ['flex', 'Flexible dates'], ['bookings', 'Bookings'], ['reminders', 'Reminders']];
 
 export async function tripView(root: HTMLElement, id: string) {
   const q = new URLSearchParams(location.search);
@@ -30,7 +31,7 @@ export async function tripView(root: HTMLElement, id: string) {
   const refresh = async () => { await load(); renderHeader(); renderBody(); };
   const renderBody = () => {
     const ctx = { id, detail, refresh, root: body };
-    const map: Record<Tab, (c: typeof ctx) => void> = { plan: planTab, discover: discoverTab, flights: flightsTab, stays: staysTab, flex: flexTab, bookings: bookingsTab, reminders: remindersTab };
+    const map: Record<Tab, (c: typeof ctx) => void> = { book: (x) => bookTab(x), plan: planTab, discover: discoverTab, flights: flightsTab, stays: staysTab, flex: flexTab, bookings: bookingsTab, reminders: remindersTab };
     replace(body, loading()); map[tab](ctx);
   };
   replace(root, h('div', { class: 'page wide' }, header, tabs, body));

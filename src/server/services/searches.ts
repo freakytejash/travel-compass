@@ -61,13 +61,39 @@ function airportOf(p: Place | null | undefined): string | null {
   return p.airports?.[0]?.iata ?? p.iata ?? null;
 }
 
-function originAirports(trip: Trip, profile: Profile): string[] {
-  const list = new Set<string>();
+export interface OriginAirport { iata: string; name: string; lat: number | null; lng: number | null; km: number | null }
+
+/**
+ * Departure airports to search: the chosen origin (and its airports), the traveller's saved departure airports and,
+ * when the flight source can search several airports at once, every other sizeable airport within NEARBY_AIRPORT_KM
+ * of home. The ranking then adds the cost and time of getting to each airport, so a cheaper fare from a farther
+ * airport only wins when it is cheaper overall.
+ */
+export async function originAirports(ctx: AppContext, trip: Pick<Trip, 'origin'>, profile: Pick<Profile, 'departureAirports' | 'homePlace'>): Promise<OriginAirport[]> {
+  const fl = ctx.providers.flights;
+  const max = fl.multiAirport ? ctx.cfg.limits.maxOriginAirports : 3;
+  const home = trip.origin ?? profile.homePlace ?? null;
+  const list = new Map<string, OriginAirport>();
+  const add = (iata: string, name: string, lat: number | null, lng: number | null) => {
+    if (!iata || list.has(iata)) return;
+    list.set(iata, { iata, name, lat, lng, km: home && lat !== null && lng !== null ? Math.round(haversineKm(home, { lat, lng })) : null });
+  };
   const o = airportOf(trip.origin);
-  if (o) list.add(o);
-  if (trip.origin?.kind === 'city') for (const a of trip.origin.airports ?? []) list.add(a.iata);
-  for (const a of profile.departureAirports ?? []) list.add(a.iata);
-  return [...list].slice(0, 3);
+  if (o) { const c = airportCoords(trip.origin, o); add(o, trip.origin!.kind === 'airport' ? trip.origin!.name : trip.origin!.airports?.find((a) => a.iata === o)?.name ?? o, c?.lat ?? null, c?.lng ?? null); }
+  if (trip.origin?.kind === 'city') for (const a of trip.origin.airports ?? []) add(a.iata, a.name, a.lat, a.lng);
+  for (const a of profile.departureAirports ?? []) {
+    const info = fl.airportInfo ? await fl.airportInfo(a.iata).catch(() => null) : null;
+    add(a.iata, a.name, info?.lat ?? null, info?.lng ?? null);
+  }
+  if (fl.multiAirport && fl.nearbyAirports && home && trip.origin?.kind !== 'airport') {
+    for (const a of await fl.nearbyAirports(home.lat, home.lng, ctx.cfg.limits.nearbyAirportKm, max + 2).catch(() => [])) add(a.iata, a.name, a.lat, a.lng);
+  }
+  return [...list.values()].slice(0, max);
+}
+
+/** Comma-joined origin when the provider can search several airports at once; otherwise the closest airport. */
+function originParam(ctx: AppContext, airports: OriginAirport[]): string | undefined {
+  return ctx.providers.flights.multiAirport ? airports.map((a) => a.iata).join(',') : airports[0]?.iata;
 }
 
 function airportCoords(p: Place | null | undefined, iata: string) {
@@ -77,20 +103,20 @@ function airportCoords(p: Place | null | undefined, iata: string) {
   return p.kind === 'airport' && p.iata === iata ? { lat: p.lat, lng: p.lng } : null;
 }
 
-async function rankContext(ctx: AppContext, trip: Trip, stops: Stop[], profile: Profile, airports: string[]): Promise<{ rc: FlightRankContext; notes: string[] }> {
+async function rankContext(ctx: AppContext, trip: Trip, stops: Stop[], profile: Profile, airports: OriginAirport[]): Promise<{ rc: FlightRankContext; notes: string[] }> {
   const notes: string[] = [];
   const cost: Record<string, number> = {}; const minutes: Record<string, number> = {};
   const home = profile.homePlace ?? trip.origin;
   for (const a of airports) {
-    const ac = airportCoords(trip.origin, a);
-    if (!home || !ac) continue;
+    if (!home || a.lat === null || a.lng === null) continue;
+    const ac = { lat: a.lat, lng: a.lng };
     const km = haversineKm(home, ac) * 1.3;
     let mins = Math.round(15 + (km / 60) * 60);
     if (ctx.providers.routes.configured()) {
       try { mins = (await ctx.providers.routes.travelMinutes(home, ac, new Date(`${trip.startDate}T06:00:00Z`), 'DRIVE')).minutes; }
-      catch { notes.push(`Transfer time to ${a} is a planning estimate (route service unavailable).`); }
+      catch { notes.push(`Transfer time to ${a.iata} is a planning estimate (route service unavailable).`); }
     }
-    minutes[a] = mins; cost[a] = Math.round(km * 0.25 * 2);
+    minutes[a.iata] = mins; cost[a.iata] = Math.round(km * 0.25 * 2);
   }
   const dest = stops[0]?.place; const last = stops[stops.length - 1]?.place;
   for (const p of [dest, last]) {
@@ -105,13 +131,24 @@ async function rankContext(ctx: AppContext, trip: Trip, stops: Stop[], profile: 
 }
 
 async function searchFlightsAcross(ctx: AppContext, userId: string, origins: string[], dest: string, back: string, out: string, inb: string, adults: number, currency: string) {
-  const results = await mapLimit(origins, ctx.cfg.limits.providerConcurrency, (o) => ctx.providers.flights.searchOffers({
+  // One search for all airports when the provider supports it (saves the free monthly allowance).
+  const groups = ctx.providers.flights.multiAirport ? [origins.join(',')] : origins;
+  const results = await mapLimit(groups, ctx.cfg.limits.providerConcurrency, (o) => ctx.providers.flights.searchOffers({
     slices: [{ origin: o, destination: dest, departureDate: out }, { origin: back, destination: o, departureDate: inb }], adults, currency, userId,
   }));
   const offers: FlightOffer[] = []; const failed: string[] = []; let lastErr: Error | null = null;
-  results.forEach((r, i) => { if (r.ok) offers.push(...r.value.offers); else { failed.push(origins[i]); lastErr = r.error; } });
+  results.forEach((r, i) => { if (r.ok) offers.push(...r.value.offers); else { failed.push(groups[i]); lastErr = r.error; } });
   if (!offers.length && lastErr) throw lastErr;
   return { offers, failed };
+}
+
+/** Explains which airport won and how far the others are. */
+function airportChoiceNote(airports: OriginAirport[], best: FlightOffer | undefined, rc: FlightRankContext): string | null {
+  if (airports.length < 2) return null;
+  const list = airports.map((a) => `${a.iata}${a.km !== null ? ` (${a.km} km)` : ''}`).join(', ');
+  const from = best?.slices[0]?.from;
+  const won = airports.find((a) => a.iata === from);
+  return `Searched ${airports.length} airports near you: ${list}.${won ? ` Best overall leaves from ${won.iata}${won.km !== null ? `, ${won.km} km away` : ''}${rc.airportTransferCost[won.iata] !== undefined ? ` (about ${rc.currency} ${rc.airportTransferCost[won.iata]} to get there and back, included in the comparison)` : ''}.` : ''}`;
 }
 
 async function storeOffers(q: Queryable, tripId: string, searchId: string, kind: 'flight' | 'stay', stopId: string | null, items: { provider: string; providerOfferId: string; data: unknown; total: { amount: number; currency: string }; quotedAt: string; expiresAt: string | null; role: string | null; explanation: string }[]) {
@@ -126,16 +163,19 @@ export async function runFlightSearch(ctx: AppContext, searchId: string, userId:
   const trip = await getOwnedTrip(ctx, userId, tripId);
   const stops = await getStops(ctx.db, tripId);
   const profile = await getProfile(ctx, userId);
-  const origins = originAirports(trip, profile);
+  const airports = await originAirports(ctx, trip, profile);
+  const origins = airports.map((a) => a.iata);
   const dest = airportOf(stops[0].place); const back = airportOf(stops[stops.length - 1].place);
   if (!origins.length || !dest || !back) return finish(ctx.db, searchId, 'failed', null, 'An airport could not be determined for the origin or destination. Choose a city with an airport or a specific airport.');
   const { offers, failed } = await searchFlightsAcross(ctx, userId, origins, dest, back, trip.startDate!, trip.endDate!, trip.adults, trip.currency);
-  const { rc, notes } = await rankContext(ctx, trip, stops, profile, origins);
+  const { rc, notes } = await rankContext(ctx, trip, stops, profile, airports);
   const complete = offers.filter((o) => !o.incomplete);
   const ranked = rankFlights(complete.length ? complete : offers, rc, ctx.now());
   if (complete.length < offers.length) notes.push(`${offers.length - complete.length} more outbound options are shown at their lowest round-trip price; the return flight is chosen when you select one.`);
   if (offers.some((o) => o.provider === 'serpapi')) notes.push('Prices come from Google Flights at search time. Baggage and fare rules are not reported by this source — check them with the seller before paying.');
-  if (failed.length) notes.push(`Searches from ${failed.join(', ')} failed; results cover ${origins.filter((o) => !failed.includes(o)).join(', ')} only.`);
+  const choice = airportChoiceNote(airports, ranked.recommended?.offer, rc);
+  if (choice) notes.unshift(choice);
+  if (failed.length && !ctx.providers.flights.multiAirport) notes.push(`Searches from ${failed.join(', ')} failed; results cover ${origins.filter((o) => !failed.includes(o)).join(', ')} only.`);
   if (stops.length > 1) notes.push('Travel between your destinations is not included in these fares.');
   const roleOf = new Map<FlightOffer, string>();
   if (ranked.cheapest) roleOf.set(ranked.cheapest.offer, 'cheapest');
@@ -154,7 +194,7 @@ export async function runFlightSearch(ctx: AppContext, searchId: string, userId:
     // Clear roles from older searches so the trip shows the current shortlist only.
     await q.query(`UPDATE offers SET role=NULL WHERE trip_id=$1 AND kind='flight' AND search_id<>$2 AND NOT selected`, [tripId, searchId]);
     await finish(q, searchId, ranked.recommended ? (failed.length ? 'partial' : 'complete') : 'failed',
-      { considered: ranked.consideredCount, excluded: ranked.excludedCount, excludedReasons: ranked.excludedReasons.slice(0, 10), origins, notes },
+      { considered: ranked.consideredCount, excluded: ranked.excludedCount, excludedReasons: ranked.excludedReasons.slice(0, 10), origins, airports, notes },
       ranked.recommended ? null : 'No bookable offers were returned for these dates. Try other dates or airports.');
   });
 }
@@ -243,7 +283,8 @@ export async function runFlexSearch(ctx: AppContext, searchId: string, userId: s
   const trip = await getOwnedTrip(ctx, userId, tripId);
   const stops = await getStops(ctx.db, tripId);
   const profile = await getProfile(ctx, userId);
-  const origin = originAirports(trip, profile)[0];
+  const airports = await originAirports(ctx, trip, profile);
+  const origin = originParam(ctx, airports);
   const dest = airportOf(stops[0].place); const back = airportOf(stops[stops.length - 1].place);
   if (!origin || !dest || !back) return finish(ctx.db, searchId, 'failed', null, 'An airport could not be determined for the origin or destination.');
   const today = ctx.now().toISOString().slice(0, 10);
@@ -253,7 +294,7 @@ export async function runFlexSearch(ctx: AppContext, searchId: string, userId: s
     // Multi-stop: shifts change only the first and last stays; each must keep at least one night.
     .filter((c) => stops.length === 1 || (firstStopNights - c.outShift >= 1 && lastStopNights + c.inShift >= 1));
   const { toCheck, skipped } = planSearch(combos, ctx.cfg.limits.flexMaxCombos);
-  const { rc } = await rankContext(ctx, trip, stops, profile, [origin]);
+  const { rc } = await rankContext(ctx, trip, stops, profile, airports);
   const flightRes = await mapLimit(toCheck, ctx.cfg.limits.providerConcurrency, async (c) => {
     const key = `flex:${origin}:${dest}:${back}:${c.outbound}:${c.inbound}:${trip.adults}:${trip.currency}`;
     const cached = await cacheGet<FlightOffer[]>(ctx, key);
@@ -285,8 +326,10 @@ export async function runFlexSearch(ctx: AppContext, searchId: string, userId: s
     });
     res.forEach((r, i) => stayAmounts.set(stayCombos[i], r.ok ? r.value : null));
   }
-  const transfers: CostLine[] = Object.entries(rc.airportTransferCost).filter(([a]) => [origin, dest, back].includes(a)).map(([a, amt]) => ({ label: `Ground transfers ${a} (planning estimate)`, amount: amt, kind: 'estimate' }));
-  const costs: ComboCost[] = priced.map((p) => computeComboCost(p.combo, { amount: p.flight, offerId: p.offerId }, stayAmounts.get(p.combo) ?? null, { transfers, interCity: [], fees: [] }));
+  // Transfers: to whichever home airport the combination's flight uses, plus destination airports.
+  const transfersFor = (offer: FlightOffer): CostLine[] => [...new Set([offer.slices[0]?.from, dest, back])].filter((a): a is string => !!a && rc.airportTransferCost[a] !== undefined)
+    .map((a) => ({ label: `Ground transfers ${a} (planning estimate)`, amount: rc.airportTransferCost[a], kind: 'estimate' }));
+  const costs: ComboCost[] = priced.map((p) => computeComboCost(p.combo, { amount: p.flight, offerId: p.offerId }, stayAmounts.get(p.combo) ?? null, { transfers: transfersFor(p.offer), interCity: [], fees: [] }));
   const rec = recommendFlex(costs, skipped, failed);
   if (!staysConfigured) rec.coverage.notes.push('Accommodation quotes are unavailable, so complete trip costs cannot be compared yet; only flight prices are shown.');
   const status = rec.recommended ? (failed.length || skipped.length ? 'partial' : 'complete') : 'partial';
@@ -315,7 +358,8 @@ interface AiDestination { city: string; country: string; iata: string; interestT
 export async function runDestinationSearch(ctx: AppContext, searchId: string, userId: string, tripId: string) {
   const trip = await getOwnedTrip(ctx, userId, tripId);
   const profile = await getProfile(ctx, userId);
-  const origin = originAirports(trip, profile)[0];
+  const airports = await originAirports(ctx, trip, profile);
+  const origin = originParam(ctx, airports);
   if (!origin) return finish(ctx.db, searchId, 'failed', null, 'Choose an origin with an airport.');
   const nights = daysBetween(trip.startDate!, trip.endDate!);
   const ideas = await ctx.providers.ai.json<{ destinations: AiDestination[] }>({
@@ -324,7 +368,7 @@ export async function runDestinationSearch(ctx: AppContext, searchId: string, us
     user: JSON.stringify({ task: 'Suggest 8 diverse destinations (cities) for this traveller. Return {"destinations":[{"city","country","iata" (main airport IATA code),"interestTags" (subset of the traveller interests that genuinely fit),"rationale" (one sentence about fit, no prices/weather)}]}',
       origin: trip.origin?.name, originAirport: origin, startDate: trip.startDate, nights, interests: profile.interests, pace: profile.pace, hiking: profile.hikingExperience, diet: profile.diet, budgetTotal: trip.budgetTotal, currency: trip.currency }),
   });
-  const candidates = (ideas.destinations ?? []).filter((d) => /^[A-Z]{3}$/.test(d.iata) && d.iata !== origin).slice(0, ctx.cfg.limits.destinationCandidates);
+  const candidates = (ideas.destinations ?? []).filter((d) => /^[A-Z]{3}$/.test(d.iata) && !airports.some((a) => a.iata === d.iata)).slice(0, ctx.cfg.limits.destinationCandidates);
   const verified = await mapLimit(candidates, ctx.cfg.limits.providerConcurrency, async (d): Promise<DestinationEvidence | null> => {
     const places = await ctx.providers.flights.searchPlaces(d.iata);
     const place = places.find((p) => p.iata === d.iata) ?? places.find((p) => p.airports?.some((a) => a.iata === d.iata));

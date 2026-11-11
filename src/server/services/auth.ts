@@ -23,7 +23,7 @@ async function issueEmailToken(ctx: AppContext, userId: string, purpose: 'verify
 
 export async function register(ctx: AppContext, i: { email: string; password: string; displayName: string }) {
   // Never create accounts that cannot be verified.
-  if (ctx.cfg.isProd && !ctx.providers.mailer.configured()) throw new NotConfiguredError('Email', ['RESEND_API_KEY']);
+  if (ctx.cfg.isProd && !ctx.providers.mailer.configured()) throw new NotConfiguredError('Email', ['BREVO_API_KEY or RESEND_API_KEY']);
   passwordPolicy(i.password);
   const hash = await hashPassword(i.password);
   const existing = await ctx.db.query<{ id: string }>('SELECT id FROM users WHERE lower(email)=lower($1)', [i.email]);
@@ -166,6 +166,7 @@ export async function exportAccount(ctx: AppContext, userId: string) {
     user: (await one('SELECT id, email, display_name, role, email_verified_at, created_at FROM users WHERE id=$1'))[0],
     profile: (await one('SELECT * FROM profiles WHERE user_id=$1'))[0],
     trips: await one('SELECT * FROM trips WHERE user_id=$1 ORDER BY created_at'),
+    tripIdeas: await one('SELECT id, status, params, result, created_at FROM trip_ideas WHERE user_id=$1 ORDER BY created_at'),
     stops: await one('SELECT s.* FROM trip_stops s JOIN trips t ON t.id=s.trip_id WHERE t.user_id=$1'),
     itineraryDays: await one('SELECT d.* FROM itinerary_days d JOIN trips t ON t.id=d.trip_id WHERE t.user_id=$1'),
     itineraryItems: await one('SELECT i.* FROM itinerary_items i JOIN itinerary_days d ON d.id=i.day_id JOIN trips t ON t.id=d.trip_id WHERE t.user_id=$1'),

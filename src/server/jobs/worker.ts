@@ -8,6 +8,7 @@ import { HttpError } from '../http/core.ts';
 import { nextDueAt, type Job } from './queue.ts';
 import { failSearch, runDestinationSearch, runFlexSearch, runFlightSearch, runStaySearch } from '../services/searches.ts';
 import { runPlanJob } from '../services/planning.ts';
+import { failIdeas, runIdeas } from '../services/ideas.ts';
 import { pollTelegram, sendNotificationJob, scheduleTripNotifications } from '../services/notifications.ts';
 import { gmailSyncJob } from '../services/reservations.ts';
 
@@ -18,6 +19,7 @@ export const handlers: Record<string, JobHandler> = {
   'search.stay': (c, p) => runStaySearch(c, p.searchId, p.userId, p.tripId),
   'search.flex': (c, p) => runFlexSearch(c, p.searchId, p.userId, p.tripId),
   'search.destinations': (c, p) => runDestinationSearch(c, p.searchId, p.userId, p.tripId),
+  'ideas.run': (c, p) => runIdeas(c, p.ideaId, p.userId),
   'plan.generate': (c, p) => runPlanJob(c, p),
   'notify.send': (c, p) => sendNotificationJob(c, p),
   'notify.reschedule': (c, p) => scheduleTripNotifications(c, p.userId, p.tripId),
@@ -48,6 +50,7 @@ export async function processJob(ctx: AppContext, job: Job) {
 async function onDead(ctx: AppContext, job: Job, e: Error) {
   const p = job.payload ?? {};
   if (job.queue.startsWith('search.') && p.searchId) await failSearch(ctx, p.searchId, e);
+  if (job.queue === 'ideas.run' && p.ideaId) await failIdeas(ctx, p.ideaId, e);
   if (job.queue === 'plan.generate' && p.tripId) {
     await ctx.db.query(`UPDATE trips SET plan_status=CASE WHEN EXISTS (SELECT 1 FROM itinerary_days WHERE trip_id=$1) THEN 'incomplete' ELSE 'failed' END,
       plan_message=$2 WHERE id=$1 AND plan_status='generating'`, [p.tripId, e instanceof NotConfiguredError ? 'Live planning is not available yet. Your saved trip is unchanged.' : e instanceof AiBudgetExceeded ? 'Daily planning limit reached. Your saved trip is unchanged; try again tomorrow.' : 'Planning services did not respond. Your saved trip is unchanged — please retry.']);

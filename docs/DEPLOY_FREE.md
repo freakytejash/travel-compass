@@ -60,12 +60,31 @@ The health check doesn't touch the database. The worker sleeps until the next re
 ## 6. First use
 
 1. Open your URL on your phone and sign up with your `ADMIN_EMAILS` address.
-2. The verification link is in Render → your service → **Logs** (search `verify-email`), because `EMAIL_LOG_ONLY=true`.
+2. With `EMAIL_LOG_ONLY=true` no email is sent: the verification link is in Render → your service → **Logs** (search `verify-email`). To get real emails in your inbox, see **Real verification emails** below.
 3. Go to **Reminders → WhatsApp, free (CallMeBot)**:
    1. Save **+34 684 78 37 08** in your contacts. That's the number CallMeBot publishes; check callmebot.com in case it changes.
    2. In WhatsApp, send it `I allow callmebot to send me messages`.
    3. Paste the API key it replies with, plus your number, into the app. Press **Send test code**, enter the code, then **Turn on reminders**.
 4. Plan a trip. The first search after a quiet period takes about a minute while Render and Neon wake up.
+
+## Real verification emails (free, Brevo)
+
+Emails don't arrive when `EMAIL_LOG_ONLY=true` (links only go to the log), or when Resend sends from `onboarding@resend.dev` (Resend only delivers that to the address you signed up to Resend with). Brevo's free plan sends 300 emails a day to anyone, from your own verified address, without a domain:
+
+1. Sign up at brevo.com (free, no card).
+2. **Senders, domains & dedicated IPs → Senders → Add a sender**: enter your own address (for example your Gmail) and confirm the email Brevo sends you.
+3. **SMTP & API → API keys → Generate a new API key**. Copy it.
+4. In Render → your service → **Environment**, set:
+   - `BREVO_API_KEY` = the key
+   - `EMAIL_FROM` = `Travel Compass <the-address-you-verified>`
+   - `EMAIL_LOG_ONLY` = `false`
+5. Save (Render redeploys). On the sign-in page use **Send a new link**; the email arrives within a minute. Check spam the first time — mail sent "from" a Gmail address through another service can be filtered. For best delivery, later verify your own domain in Brevo (SPF/DKIM).
+
+## Trip ideas and "Book everything"
+
+- The dashboard is public: anyone can pick a city and see upcoming long weekends (Nager.Date, free, no key) and the airports that will be compared.
+- **Suggest trips** (signed in): one SerpApi *Google Travel Explore* search per date window (default 3), from all airports within 150 km at once. Choosing an idea creates the trip and starts one Google Flights search (all nearby airports together, plus 2 return searches) and one Google Hotels search. A full idea → trip run costs about 7 of the 250 free monthly searches.
+- **Book everything** lists flights and stays with live prices, plus prefilled links for hostels, Airbnb, car rental (Kayak, sorted by price), trains/buses (Rome2Rio) and tickets your itinerary marks as needing a reservation. Car rental, hostel-site and Airbnb prices aren't loaded in the app: there's no free price feed for them.
 
 ## WhatsApp: what's free and what isn't
 

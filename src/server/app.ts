@@ -16,6 +16,8 @@ import * as booking from './services/booking.ts';
 import * as reservations from './services/reservations.ts';
 import * as notifications from './services/notifications.ts';
 import * as admin from './services/admin.ts';
+import * as ideas from './services/ideas.ts';
+import { bookingPlan } from './services/bookAll.ts';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../public');
 const ITEM_KINDS = ['wake', 'breakfast', 'transfer', 'activity', 'hike', 'lunch', 'break', 'dinner', 'checkin', 'checkout', 'flight', 'travel'] as const;
@@ -68,7 +70,7 @@ export function createApp(ctx: AppContext) {
   r.post('/api/auth/register', async (c) => {
     const b = v.object({ email: v.email(), password: v.string({ trim: false, max: 200 }), displayName: v.string({ min: 1, max: 80 }) }).parse(c.body);
     await auth.register(ctx, b);
-    return { ok: true, message: cfg.email.logOnly && !cfg.email.resendApiKey ? 'Account created. Email is in log-only mode: copy the verification link from the server log (docker compose logs web | grep verify-email).' : 'Check your inbox for a verification link.' };
+    return { ok: true, message: cfg.email.logOnly && !cfg.email.resendApiKey && !cfg.email.brevoApiKey ? 'Account created. Email is in log-only mode, so no email is sent: the verification link is in the server log (Render → Logs, search verify-email). Add BREVO_API_KEY to send real emails.' : 'Check your inbox for a verification link.' };
   }, { auth: 'none', rate: 'auth' });
   r.post('/api/auth/resend-verification', async (c) => { await auth.resendVerification(ctx, v.object({ email: v.email() }).parse(c.body).email); return { ok: true }; }, { auth: 'none', rate: 'auth' });
   r.post('/api/auth/verify-email', async (c) => {
@@ -122,7 +124,25 @@ export function createApp(ctx: AppContext) {
     const q = (c.url.searchParams.get('q') ?? '').slice(0, 80);
     const lat = Number(c.url.searchParams.get('lat')); const lng = Number(c.url.searchParams.get('lng'));
     return profile.searchPlaces(ctx, q, Number.isFinite(lat) && Number.isFinite(lng) && c.url.searchParams.has('lat') ? { lat, lng } : undefined);
-  }, { auth: 'user' });
+  }, { auth: 'none' }); // public: free place search, rate-limited per IP
+
+  // ---------- public dashboard data (no paid searches) ----------
+  r.get('/api/public/windows', async (c) => {
+    const country = v.string({ pattern: /^[A-Za-z]{2}$/ }).parse(c.url.searchParams.get('country') ?? '');
+    const months = Math.min(12, Math.max(1, Number(c.url.searchParams.get('months') ?? 6) || 6));
+    return ideas.windowsFor(ctx, country, months);
+  }, { auth: 'none' });
+
+  // ---------- trip ideas ----------
+  r.post('/api/ideas', async (c) => {
+    const b = v.object({ origin: placeSchema, country: v.optional(v.string({ pattern: /^[A-Za-z]{2}$/ })), months: v.optional(v.number({ int: true, min: 1, max: 12 })), adults: v.optional(v.number({ int: true, min: 1, max: 9 })),
+      budget: v.optional(v.nullable(v.number({ min: 0, max: 1_000_000 }))), currency: v.optional(v.string({ pattern: /^[A-Z]{3}$/ })), windowIds: v.optional(v.array(v.string({ pattern: /^\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}$/ }), { max: 3 })) }).parse(c.body);
+    const prof = await profile.getProfile(ctx, c.user!.id);
+    return { ideaId: await ideas.startIdeas(ctx, c.user!.id, { origin: b.origin, country: b.country, months: b.months ?? 6, adults: b.adults ?? 1, budget: b.budget ?? prof.budgetTotal ?? null, currency: b.currency ?? prof.currency ?? 'EUR', windowIds: b.windowIds }) };
+  }, { auth: 'user', rate: 'expensive' });
+  r.get('/api/ideas/latest', async (c) => ideas.latestIdeas(ctx, c.user!.id), { auth: 'user' });
+  r.get('/api/ideas/:id', async (c) => ideas.getIdeas(ctx, c.user!.id, v.uuid().parse(c.params.id)), { auth: 'user' });
+  r.post('/api/ideas/:id/choose', async (c) => ideas.chooseIdea(ctx, c.user!.id, v.uuid().parse(c.params.id), v.object({ index: v.number({ int: true, min: 0, max: 50 }) }).parse(c.body).index), { auth: 'user', rate: 'expensive' });
 
   // ---------- trips ----------
   r.get('/api/trips', async (c) => trips.listTrips(ctx, c.user!.id), { auth: 'user' });
@@ -159,6 +179,7 @@ export function createApp(ctx: AppContext) {
     if (!it.rows.length) throw new HttpError(404, 'not_found', 'Item not found');
     return planning.requestPlan(ctx, c.user!.id, c.params.id, { date: it.rows[0].day_date, excludePlaceIds: it.rows[0].venue?.placeId ? [it.rows[0].venue.placeId] : [] });
   }, { auth: 'user', rate: 'expensive' });
+  r.get('/api/trips/:id/book', async (c) => bookingPlan(ctx, c.user!.id, c.params.id), { auth: 'user' });
   r.get('/api/trips/:id/notifications', async (c) => { await trips.getOwnedTrip(ctx, c.user!.id, c.params.id); return notifications.listNotifications(ctx, c.user!.id, c.params.id); }, { auth: 'user' });
 
   // ---------- booking ----------

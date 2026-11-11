@@ -8,17 +8,21 @@ const PLAN_BADGE: Record<string, [string, 'ok' | 'warn' | 'bad' | 'info' | 'mute
   none: ['No plan yet', 'muted'], generating: ['Researching…', 'info'], complete: ['Plan complete', 'ok'], incomplete: ['Plan incomplete', 'warn'], failed: ['Plan failed', 'bad'],
 };
 
+export function tripsList(trips: any[]) {
+  return trips.length ? h('ul', { class: 'trip-grid' }, ...trips.map((t: any) => h('li', null, h('a', { class: 'trip-card', href: `/trips/${t.id}` },
+    h('span', { class: 'ticket-stub' }, t.origin?.iata ?? '···', ' → '),
+    h('h2', null, t.title), h('p', { class: 'mono' }, t.startDate ? `${fmtDate(t.startDate)} – ${fmtDate(t.endDate)}` : 'Dates not set'),
+    h('p', null, badge(...(PLAN_BADGE[t.planStatus] ?? ['', 'muted'])), ' ', badge(t.status, t.status === 'booked' ? 'ok' : 'muted'), t.budgetTotal ? ` · budget ${fmtMoney(t.budgetTotal, t.currency)}` : '')))))
+    : h('div', { class: 'empty' }, h('p', null, 'No trips yet. Let us suggest one, or plan your own.'), h('a', { class: 'button primary', href: '/ideas' }, 'Suggest trips'), ' ', h('a', { class: 'button secondary', href: '/trips/new' }, 'Plan my own'));
+}
+
 export async function tripsView(root: HTMLElement) {
   replace(root, loading());
   try {
     const trips = await get('/api/trips');
     replace(root, h('div', { class: 'page' },
       h('div', { class: 'page-head' }, h('h1', null, 'Your trips'), h('a', { class: 'button primary', href: '/trips/new' }, 'Plan a trip')),
-      trips.length ? h('ul', { class: 'trip-grid' }, ...trips.map((t: any) => h('li', null, h('a', { class: 'trip-card', href: `/trips/${t.id}` },
-        h('span', { class: 'ticket-stub' }, t.origin?.iata ?? '···', ' → '),
-        h('h2', null, t.title), h('p', { class: 'mono' }, t.startDate ? `${fmtDate(t.startDate)} – ${fmtDate(t.endDate)}` : 'Dates not set'),
-        h('p', null, badge(...(PLAN_BADGE[t.planStatus] ?? ['', 'muted'])), ' ', badge(t.status, t.status === 'booked' ? 'ok' : 'muted'), t.budgetTotal ? ` · budget ${fmtMoney(t.budgetTotal, t.currency)}` : '')))))
-        : h('div', { class: 'empty' }, h('p', null, 'No trips yet.'), h('a', { class: 'button primary', href: '/trips/new' }, 'Start your first trip'))));
+      tripsList(trips)));
   } catch (e) { replace(root, errorBox(e, () => tripsView(root))); }
 }
 

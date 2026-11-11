@@ -23,11 +23,13 @@ services:
         sync: false
       - key: ADMIN_EMAILS                   # the email you will sign up with
         sync: false
-      - key: EMAIL_LOG_ONLY                 # true = read sign-up links in Render's Logs tab; false + RESEND_API_KEY for real emails
+      - key: EMAIL_LOG_ONLY                 # set "false" once BREVO_API_KEY is in; "true" only prints links to Render's Logs
         value: "true"
-      - key: RESEND_API_KEY
+      - key: BREVO_API_KEY                  # free 300 emails/day; sends real verification emails to any address
         sync: false
-      - key: EMAIL_FROM
+      - key: RESEND_API_KEY                 # alternative; needs your own verified domain to reach other people
+        sync: false
+      - key: EMAIL_FROM                     # e.g. Travel Compass <you@gmail.com> — must be a verified sender in Brevo
         sync: false
       - key: SERPAPI_API_KEY                # free: 250 searches/month
         sync: false

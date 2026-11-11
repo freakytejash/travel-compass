@@ -16,7 +16,8 @@ The admin page (`/admin`) shows the same information at runtime and marks an int
 |---|---|
 | Registration, verified email, login, logout, password recovery, session revocation on reset | Tested locally |
 | Google sign-in (OIDC + PKCE) | Awaiting credentials (`GOOGLE_CLIENT_ID/SECRET`); token exchange not tested end-to-end |
-| Transactional email (Resend) | Awaiting credentials |
+| Transactional email (Brevo free 300/day, or Resend) | Brevo request format tested with a simulated API; awaiting `BREVO_API_KEY` for a live send |
+| Public dashboard (no sign-in): city search, holiday windows, nearby airports | Tested locally |
 | Profile: home city, airports, time zone, currency, diet, allergies, budget, pace, interests, hiking, room preference, wake/prep times | Tested locally |
 | Server-enforced per-customer data separation | Tested locally (two-user test across trips, searches, offers, reservations, admin) |
 | Account export (JSON) and deletion (with Gmail revocation and job cancellation) | Tested locally |
@@ -44,7 +45,11 @@ The admin page (`/admin`) shows the same information at runtime and marks an int
 | Replace venue, move activity, change pace, regenerate one day | Tested locally (move, pace, single-day regenerate); replace uses the same path |
 | Autosave with conflict detection | Tested locally |
 | Live traffic transfer times (Google Routes) | Awaiting credentials; falls back to labelled planning assumptions |
-| Inter-city transport (trains/buses between stops) | **Not implemented** — shown as an explicit planning assumption |
+| Inter-city transport (trains/buses between stops) | No prices; prefilled Rome2Rio links in "Book everything" |
+| Trip ideas: holiday/long-weekend windows (Nager.Date) × cheapest destinations (SerpApi Google Travel Explore) × weather | Tested locally with simulated Nager/SerpApi responses; awaiting live check |
+| All airports within 150 km searched in ONE Google Flights search; transfer cost to each airport included in ranking | Tested locally with simulated SerpApi |
+| Choose an idea → trip created → flights, stays and itinerary searches start automatically | Tested locally |
+| "Book everything" checklist: flights, stays, hostels/Airbnb links, car rental links, transport, tickets, extras; booked items tracked | Tested locally. Car rental and Airbnb/hostel-site prices are **not** loaded (no free price API) — links only |
 
 ## Bookings, Gmail, reminders
 

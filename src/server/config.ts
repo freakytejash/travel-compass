@@ -39,7 +39,7 @@ export function loadConfig() {
     adminEmails: (str('ADMIN_EMAILS', '') ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
 
     google: { clientId: str('GOOGLE_CLIENT_ID'), clientSecret: str('GOOGLE_CLIENT_SECRET') },
-    email: { resendApiKey: str('RESEND_API_KEY'), from: str('EMAIL_FROM', 'Travel Compass <no-reply@example.com>')!,
+    email: { resendApiKey: str('RESEND_API_KEY'), brevoApiKey: str('BREVO_API_KEY'), from: str('EMAIL_FROM', 'Travel Compass <no-reply@example.com>')!,
       // Personal self-hosting only: print verification/reset links to the server log instead of emailing them.
       logOnly: bool('EMAIL_LOG_ONLY', false) },
     duffel: { token: str('DUFFEL_ACCESS_TOKEN'), staysEnabled: bool('DUFFEL_STAYS_ENABLED', false), linksEnabled: bool('DUFFEL_LINKS_ENABLED', false), webhookSecret: str('DUFFEL_WEBHOOK_SECRET') },
@@ -57,6 +57,7 @@ export function loadConfig() {
     userAgent: `TravelCompass/1.0 (+${appUrl})`,
     // Free personal WhatsApp via CallMeBot (each user brings their own CallMeBot key for their own number).
     callmebotEnabled: bool('CALLMEBOT_ENABLED', true),
+    holidaysUrl: str('HOLIDAYS_API_URL', 'https://date.nager.at/api/v3')!,
     whatsapp: { token: str('WHATSAPP_ACCESS_TOKEN'), phoneNumberId: str('WHATSAPP_PHONE_NUMBER_ID'), appSecret: str('WHATSAPP_APP_SECRET'), verifyToken: str('WHATSAPP_WEBHOOK_VERIFY_TOKEN'), graphVersion: str('WHATSAPP_GRAPH_VERSION', 'v23.0')!,
       templates: { verification: str('WHATSAPP_TEMPLATE_VERIFICATION', 'tc_verification_code')!, pretrip: str('WHATSAPP_TEMPLATE_PRETRIP', 'tc_pretrip_briefing')!, daily: str('WHATSAPP_TEMPLATE_DAILY', 'tc_daily_schedule')! }, templateLanguage: str('WHATSAPP_TEMPLATE_LANGUAGE', 'en')! },
     limits: {
@@ -64,6 +65,10 @@ export function loadConfig() {
       flexMaxCombos: num('FLEX_MAX_COMBOS', freeFlights ? 9 : 49),
       flexStayQuoteCombos: num('FLEX_STAY_QUOTE_COMBOS', freeFlights ? 2 : 6),
       destinationCandidates: num('DESTINATION_CANDIDATES', freeFlights ? 4 : 8),
+      // Trip ideas: each priced date window is one Google Travel Explore search.
+      ideaWindows: num('IDEA_WINDOWS', 3),
+      nearbyAirportKm: num('NEARBY_AIRPORT_KM', 150),
+      maxOriginAirports: num('MAX_ORIGIN_AIRPORTS', 6),
       providerConcurrency: num('PROVIDER_CONCURRENCY', 4),
       apiRatePerMinute: num('API_RATE_PER_MINUTE', 120),
       authRatePerMinute: num('AUTH_RATE_PER_MINUTE', 10),
@@ -99,7 +104,7 @@ export function integrationReadiness(c: Config): IntegrationInfo[] {
   return [
     mk('database', 'PostgreSQL', 'Persistent storage for all customer data', true, [['DATABASE_URL', c.databaseUrl]]),
     mk('encryption', 'Token encryption key', 'Encrypts OAuth tokens and traveller details at rest', true, [['TOKEN_ENCRYPTION_KEY', c.tokenEncryptionKey]]),
-    mk('email', c.email.logOnly && !c.email.resendApiKey ? 'Email (log-only, personal use)' : 'Resend (transactional email)', 'Email verification and password recovery', true, [['RESEND_API_KEY or EMAIL_LOG_ONLY', c.email.resendApiKey || c.email.logOnly]], c.email.logOnly ? [] : ['Verified sending domain (SPF/DKIM)']),
+    mk('email', c.email.brevoApiKey ? 'Brevo (free 300 emails/day)' : c.email.resendApiKey ? 'Resend (transactional email)' : c.email.logOnly ? 'Email (log-only: links go to the server log, not your inbox)' : 'Email', 'Email verification and password recovery', true, [['BREVO_API_KEY or RESEND_API_KEY', c.email.brevoApiKey || c.email.resendApiKey || (c.email.logOnly ? 'log' : '')]], c.email.brevoApiKey ? ['Verified sender address in Brevo (Senders & IP)'] : c.email.resendApiKey ? ['Verified sending domain in Resend (onboarding@resend.dev only reaches your own address)'] : []),
     mk('google_login', 'Google sign-in', 'Sign in with Google', false, [['GOOGLE_CLIENT_ID', c.google.clientId], ['GOOGLE_CLIENT_SECRET', c.google.clientSecret]], ['Google OAuth consent screen (testing mode is fine for personal use)']),
     // Flights: Duffel (booking provider) or SerpApi Google Flights (free 250 searches/month)
     mk('duffel_flights', 'Duffel Flights', 'Live bookable flight offers', !serp, [['DUFFEL_ACCESS_TOKEN', c.duffel.token]], ['Duffel live-mode account (KYC) for real bookings']),
@@ -118,6 +123,8 @@ export function integrationReadiness(c: Config): IntegrationInfo[] {
     mk('ai_compat', `OpenAI-compatible AI (${c.openai.baseUrl ? new URL(c.openai.baseUrl).hostname : 'Groq / Ollama'})`, 'Free AI planning via Groq free tier or a local Ollama model', !anthropic, [['AI_BASE_URL', c.openai.baseUrl], ['AI_MODEL', c.openai.model]]),
     // Research: Brave (paid credits) or Wikivoyage/Wikipedia (free)
     mk('research', 'Brave Search API', 'Open-web sources for hikes, dishes, closures', false, [['BRAVE_SEARCH_API_KEY', c.research.braveApiKey]], ['Brave Search plan (card required)']),
+    mk('holidays', 'Nager.Date public holidays (free)', 'Long weekends and holiday weeks for trip ideas', false, []),
+    mk('travel_explore', 'SerpApi — Google Travel Explore (uses the same 250/month)', 'Cheapest destinations from your nearby airports for each holiday window', false, [['SERPAPI_API_KEY', c.serpapi.apiKey]]),
     mk('wikimedia', 'Wikivoyage + Wikipedia', 'Free sources for local dishes, sights and trails (CC BY-SA)', !brave, []),
     mk('gmail', 'Gmail API (customer OAuth)', 'Reservation import from customer inboxes', false, [['GOOGLE_CLIENT_ID', c.google.clientId], ['GOOGLE_CLIENT_SECRET', c.google.clientSecret]], ['For your own inbox: keep the OAuth app in testing and add yourself as a test user. Public use needs Google restricted-scope verification + CASA']),
     mk('callmebot', 'WhatsApp via CallMeBot (free, personal)', 'Reminders to your own WhatsApp number; each user activates their own key; no delivery receipts', false, [['CALLMEBOT_ENABLED', c.callmebotEnabled]], ['Personal use only (CallMeBot terms); unofficial gateway, not Meta']),

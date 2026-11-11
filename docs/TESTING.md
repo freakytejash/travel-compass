@@ -4,7 +4,7 @@ Run: `npm test` (needs PostgreSQL at `TEST_DATABASE_URL`; the integration suite 
 
 **All automated tests use mocked providers** (`test/helpers/mocks.ts`) or simulated provider HTTP responses. They prove the application logic, persistence, security rules and failure handling — not that any live provider works. Live verification is done per deployment with `npm run check:integrations` and the manual journey in ADMIN_CHECKLIST.md §11.
 
-Last run (2026-11-04, Node 22.23, PostgreSQL 16): **77 tests, 77 passed, 0 failed** (re-run 2026-11-09).
+Last run (2026-11-11, Node 22.23, PostgreSQL 16): **89 tests, 89 passed, 0 failed**. New: `test/unit/ideas.test.ts` (holiday windows, idea ranking, Travel Explore parsing, booking links, Brevo) and `test/integration/ideas-book.test.ts` (public dashboard → ideas → choose → multi-airport flight search → Book everything).
 
 | Suite | Covers |
 |---|---|

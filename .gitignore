@@ -1,0 +1,12 @@
+.neon
+node_modules/
+
+.env
+.env.*
+!.env.example
+!.env.free.example
+node_modules/
+public/app.js
+public/app.js.map
+*.patch
+data/

@@ -48,6 +48,10 @@ Runtime dependencies: **none**. Dev dependencies: `typescript`, `esbuild`, `@typ
 | `docker compose --profile local-ai up -d` | Also start a local Ollama server (free, private AI) |
 | `docker compose exec ollama ollama pull qwen2.5:7b` | Download a local model for Ollama |
 | `docker compose logs web \| grep verify-email` | Read your sign-up link when `EMAIL_LOG_ONLY=true` |
+| `node --test test/unit/ideas.test.ts` | Unit tests for holiday windows, trip-idea ranking, booking links and Brevo email |
+| `node --test test/integration/ideas-book.test.ts` | Dashboard → trip ideas → choose → multi-airport flights → Book everything (needs test DB) |
+| `curl "https://<your-url>/api/public/windows?country=BE&months=6"` | Check the public holiday/long-weekend data on a deployment |
+| `git am 0001-*.patch && git push` | Apply a patch file from Claude to your repo; Render redeploys on push |
 | `cp .env.free.example .env` | Start from the zero-cost configuration |
 | `git remote add origin https://github.com/<you>/travel-compass.git && git push -u origin main` | Put the code on GitHub for Render to deploy (Render → New → Blueprint reads `render.yaml`) |
 | `curl https://<your-url>/api/ready` | Check a deployed instance and its database are up |
@@ -67,7 +71,7 @@ npm start                            # http://localhost:3000
 npm test
 ```
 
-Without provider credentials the app still runs: accounts, profiles, trips, autosave, reservations and the admin page work; live searches, plan generation and reminders respond with a clear "not available yet" message and **never** substitute placeholder data. In development, verification emails are printed to the log when `RESEND_API_KEY` is unset (never in production).
+Without provider credentials the app still runs: accounts, profiles, trips, autosave, reservations and the admin page work; live searches, plan generation and reminders respond with a clear "not available yet" message and **never** substitute placeholder data. In development, verification emails are printed to the log when no email key is set (never in production unless `EMAIL_LOG_ONLY=true`). For real emails set `BREVO_API_KEY` (free 300/day) — see docs/DEPLOY_FREE.md.
 
 ## How it works
 
