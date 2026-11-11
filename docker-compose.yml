@@ -1,0 +1,40 @@
+# Local/staging stack: PostgreSQL, web (with migrations) and a separate worker.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tc
+      POSTGRES_PASSWORD: devpass
+      POSTGRES_DB: travel_compass
+    volumes: [pgdata:/var/lib/postgresql/data]
+    ports: ["5433:5432"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U tc"], interval: 5s, retries: 10 }
+  web:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://tc:devpass@db:5432/travel_compass
+      RUN_WORKER_IN_PROCESS: "false"
+    ports: ["3000:3000"]
+    volumes: [appdata:/app/data]
+    depends_on: { db: { condition: service_healthy } }
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://tc:devpass@db:5432/travel_compass
+      MIGRATE_ON_START: "false"
+    command: ["node", "src/server/jobs/worker-main.ts"]
+    volumes: [appdata:/app/data]
+    depends_on: [web]
+  # Optional free, private AI on your own machine: docker compose --profile local-ai up -d
+  # then set AI_BASE_URL=http://ollama:11434/v1, AI_MODEL=qwen2.5:7b and run: docker compose exec ollama ollama pull qwen2.5:7b
+  ollama:
+    image: ollama/ollama
+    profiles: ["local-ai"]
+    volumes: [ollama:/root/.ollama]
+    ports: ["11434:11434"]
+volumes:
+  pgdata:
+  appdata:
+  ollama:

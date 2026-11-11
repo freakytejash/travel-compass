@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Travel Compass Mobile</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+/* Travel Compass design system: field notebook meets departures board.
+   Layout: one phone-width column, sticky header, bottom tab bar, bottom sheets for actions. */
+:root {
+  --paper: #f6f1e7; --card: #fffdf8; --ink: #1f2b3d; --ink-2: #4a5568; --muted: #7a7f88; --line: #e2d9c8;
+  --accent: #c8623a; --accent-ink: #ffffff;
+  --ok: #2f7a4f; --ok-bg: #e5f2e9; --warn: #8a5a00; --warn-bg: #fbf0d9; --info: #2a5a8a; --info-bg: #e4eef8;
+  --display: "Fraunces", "Iowan Old Style", Georgia, serif;
+  --body: "Source Sans 3", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  --r: 12px; --shadow: 0 1px 0 rgba(31,43,61,.06), 0 8px 22px -14px rgba(31,43,61,.35);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #141a23; --card: #1c2430; --ink: #eef1f5; --ink-2: #c3cad4; --muted: #8b95a3; --line: #2e3847;
+    --accent: #e8875c; --accent-ink: #1a1208;
+    --ok: #7fd3a0; --ok-bg: #173323; --warn: #f0c46b; --warn-bg: #3a2d10; --info: #8fbbe8; --info-bg: #182a3d;
+    --shadow: 0 1px 0 rgba(0,0,0,.3), 0 8px 22px -14px rgba(0,0,0,.7); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #141a23; --card: #1c2430; --ink: #eef1f5; --ink-2: #c3cad4; --muted: #8b95a3; --line: #2e3847;
+  --accent: #e8875c; --accent-ink: #1a1208;
+  --ok: #7fd3a0; --ok-bg: #173323; --warn: #f0c46b; --warn-bg: #3a2d10; --info: #8fbbe8; --info-bg: #182a3d;
+  --shadow: 0 1px 0 rgba(0,0,0,.3), 0 8px 22px -14px rgba(0,0,0,.7); color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 var(--body); -webkit-tap-highlight-color: transparent; }
+h1, h2, h3 { font-family: var(--display); line-height: 1.15; margin: 0; text-wrap: balance; letter-spacing: -.01em; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+.shell { max-width: 480px; margin: 0 auto; min-height: 100%; display: flex; flex-direction: column; background: var(--paper); }
+header.top { position: sticky; top: 0; z-index: 5; background: var(--card); border-bottom: 1px solid var(--line);
+  padding: calc(env(safe-area-inset-top) + 10px) 16px 10px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.brand { font-family: var(--display); font-weight: 700; font-size: 1.1rem; display: flex; gap: 6px; align-items: center; }
+.brand b { color: var(--accent); }
+.sample { font-size: .72rem; font-weight: 700; letter-spacing: .04em; color: var(--warn); background: var(--warn-bg); padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+main { flex: 1; padding: 16px 16px calc(env(safe-area-inset-bottom) + 92px); display: flex; flex-direction: column; gap: 14px; }
+
+.trip-head { display: flex; flex-direction: column; gap: 4px; }
+.route { font-family: var(--mono); color: var(--accent); font-weight: 700; font-size: .85rem; letter-spacing: .06em; }
+.trip-head h1 { font-size: 1.75rem; }
+.trip-head p { margin: 0; color: var(--ink-2); font-family: var(--mono); font-size: .82rem; }
+.status-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+
+.pill { display: inline-flex; align-items: center; gap: 4px; font-size: .74rem; font-weight: 700; padding: 3px 9px; border-radius: 999px; letter-spacing: .01em; }
+.pill.ok { background: var(--ok-bg); color: var(--ok); } .pill.warn { background: var(--warn-bg); color: var(--warn); }
+.pill.info { background: var(--info-bg); color: var(--info); } .pill.muted { background: var(--line); color: var(--ink-2); }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 8px; }
+.card.rec { border: 2px solid var(--accent); }
+.eyebrow { font-size: .72rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin: 0; }
+.price { font-family: var(--mono); font-size: 1.55rem; font-weight: 700; margin: 0; font-variant-numeric: tabular-nums; }
+.price small { font-family: var(--body); font-size: .8rem; font-weight: 600; color: var(--muted); }
+.leg { border-top: 1px dashed var(--line); padding-top: 8px; display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; align-items: baseline; }
+.leg .t { font-family: var(--mono); font-weight: 700; font-size: 1.05rem; }
+.leg .ap { font-family: var(--mono); color: var(--ink-2); font-size: .8rem; }
+.leg .line { grid-column: 2; height: 2px; background: repeating-linear-gradient(90deg, var(--line) 0 6px, transparent 6px 10px); align-self: center; position: relative; }
+.leg .meta { grid-column: 1 / -1; font-size: .82rem; color: var(--ink-2); }
+.why { color: var(--ink-2); font-size: .9rem; margin: 0; }
+.fine { color: var(--muted); font-size: .78rem; margin: 0; }
+.caveat { color: var(--warn); font-size: .82rem; margin: 0; }
+.btn { border: 0; border-radius: 999px; padding: 12px 16px; min-height: 46px; font-weight: 700; background: var(--accent); color: var(--accent-ink); width: 100%; }
+.btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+.btn.small { width: auto; min-height: 36px; padding: 7px 14px; font-size: .88rem; }
+
+.section-title { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.section-title h2 { font-size: 1.25rem; }
+.notice { border-left: 4px solid; border-radius: 8px; padding: 10px 12px; font-size: .9rem; margin: 0; }
+.notice.ok { background: var(--ok-bg); border-color: var(--ok); } .notice.warn { background: var(--warn-bg); border-color: var(--warn); } .notice.info { background: var(--info-bg); border-color: var(--info); }
+
+/* day chips */
+.days { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+.days::-webkit-scrollbar { display: none; }
+.day-chip { flex: 0 0 auto; border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 8px 12px; text-align: left; min-width: 86px; }
+.day-chip span { display: block; font-size: .72rem; color: var(--muted); font-weight: 600; }
+.day-chip strong { font-family: var(--mono); font-size: .95rem; }
+.day-chip[aria-selected="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--card)); }
+.day-chip .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-left: 4px; vertical-align: middle; }
+
+.weather { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-family: var(--mono); font-size: .8rem; color: var(--ink-2); flex-wrap: wrap; }
+.timeline { list-style: none; margin: 0; padding: 0; position: relative; }
+.timeline::before { content: ""; position: absolute; left: 3.35rem; top: 6px; bottom: 6px; width: 2px; background: var(--line); }
+.it { display: grid; grid-template-columns: 2.9rem 1fr; gap: 0 16px; padding: 8px 0; position: relative; }
+.it::before { content: ""; position: absolute; left: calc(3.35rem - 4px); top: 15px; width: 10px; height: 10px; border-radius: 50%; background: var(--card); border: 2px solid var(--accent); }
+.it.minor::before { width: 6px; height: 6px; left: calc(3.35rem - 2px); top: 13px; border-color: var(--muted); }
+.it .time { font-family: var(--mono); font-weight: 700; color: var(--accent); font-size: .85rem; padding-top: 1px; }
+.it.minor .time { color: var(--muted); font-weight: 500; }
+.it .body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.it .title { font-weight: 700; margin: 0; }
+.it.minor .title { font-weight: 400; color: var(--ink-2); font-size: .88rem; }
+.it .addr { font-size: .8rem; color: var(--muted); margin: 0; }
+.it details { font-size: .82rem; color: var(--ink-2); }
+.it summary { cursor: pointer; color: var(--info); font-weight: 600; list-style: none; }
+.it summary::-webkit-details-marker { display: none; }
+.it details[open] summary { margin-bottom: 4px; }
+.srcs { font-size: .76rem; color: var(--muted); margin: 0; }
+.srcs a { color: var(--info); }
+.notes { font-size: .84rem; color: var(--ink-2); margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+
+/* stays table → cards */
+.night-bar { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.night-bar div { background: var(--ok-bg); color: var(--ok); text-align: center; font-family: var(--mono); font-size: .72rem; font-weight: 700; padding: 6px 2px; border-radius: 6px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: .86rem; margin: 0; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* telegram preview */
+.chat { background: color-mix(in srgb, var(--info) 10%, var(--paper)); border-radius: var(--r); padding: 14px; display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--line); }
+.bubble { background: var(--card); border-radius: 14px 14px 14px 4px; padding: 10px 12px; font-size: .88rem; white-space: pre-line; box-shadow: var(--shadow); max-width: 92%; }
+.bubble .bt { font-family: var(--mono); font-size: .68rem; color: var(--muted); display: block; text-align: right; margin-top: 4px; }
+.sched { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.sched li { display: flex; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); align-items: center; font-size: .9rem; }
+.sched li:last-child { border-bottom: 0; }
+
+/* trips */
+.ticket { position: relative; overflow: hidden; }
+.ticket::after { content: ""; position: absolute; right: 22px; top: 0; bottom: 0; border-right: 2px dashed var(--line); }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+.stat b { display: block; font-family: var(--mono); font-size: 1.1rem; }
+.stat span { font-size: .74rem; color: var(--muted); }
+
+/* tab bar */
+nav.tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--card); border-top: 1px solid var(--line);
+  padding: 6px 8px calc(env(safe-area-inset-bottom) + 6px); }
+nav.tabs .inner { max-width: 480px; margin: 0 auto; display: grid; grid-template-columns: repeat(5, 1fr); }
+nav.tabs a { text-decoration: none; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: .7rem; font-weight: 700; padding: 6px 0; border-radius: 10px; }
+nav.tabs svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+nav.tabs a[aria-current="page"] { color: var(--accent); }
+
+/* bottom sheet */
+.scrim { position: fixed; inset: 0; background: rgba(15, 20, 28, .5); z-index: 10; display: none; }
+.sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 11; max-width: 480px; margin: 0 auto; background: var(--card); border-radius: 18px 18px 0 0;
+  padding: 10px 16px calc(env(safe-area-inset-bottom) + 18px); transform: translateY(105%); transition: transform .25s ease; display: flex; flex-direction: column; gap: 12px; max-height: 88%; overflow-y: auto; }
+.sheet.open { transform: none; } .scrim.open { display: block; }
+.grab { width: 40px; height: 4px; border-radius: 4px; background: var(--line); margin: 0 auto 4px; }
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; list-style: none; margin: 0; padding: 0; }
+.steps li { font-size: .72rem; font-weight: 700; color: var(--muted); border-top: 3px solid var(--line); padding-top: 6px; }
+.steps li.done { color: var(--ok); border-color: var(--ok); } .steps li.now { color: var(--accent); border-color: var(--accent); }
+.seller { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.check { display: flex; gap: 10px; align-items: flex-start; font-size: .9rem; }
+.check input { width: 20px; height: 20px; accent-color: var(--accent); margin-top: 2px; flex: 0 0 auto; }
+[hidden] { display: none !important; }
+@media (prefers-reduced-motion: reduce) { .sheet { transition: none; } }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="top">
+    <div class="brand"><b aria-hidden="true">◈</b> Travel Compass</div>
+    <span class="sample" title="Data from a test run with simulated providers">Sample data</span>
+  </header>
+
+  <main id="view"></main>
+</div>
+
+<nav class="tabs" aria-label="Sections">
+  <div class="inner">
+    <a href="#trips" data-v="trips"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>Trips</a>
+    <a href="#flights" data-v="flights"><svg viewBox="0 0 24 24"><path d="M2 16l20-6-3-2-7 2-5-5-2 1 3 5-4 1-2-1-1 1z"/><path d="M3 21h18"/></svg>Flights</a>
+    <a href="#stays" data-v="stays"><svg viewBox="0 0 24 24"><path d="M3 20V8l9-5 9 5v12"/><path d="M9 20v-6h6v6"/></svg>Stays</a>
+    <a href="#itinerary" data-v="itinerary"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg>Plan</a>
+    <a href="#reminders" data-v="reminders"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21h4"/></svg>Alerts</a>
+  </div>
+</nav>
+
+<div class="scrim" id="scrim"></div>
+<section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title"></section>
+
+<script>
+const TRIP = { title: 'Barcelona on a budget', route: 'BRU → BCN', dates: 'Wed 10 – Sat 13 Mar 2027', travellers: 1 };
+
+const FLIGHTS = [
+  { role: 'Recommended best value', rec: true, price: 210, legs: [
+      { d: '09:00', a: '11:05', from: 'BRU', to: 'BCN', date: 'Wed 10 Mar', meta: 'Brussels Airlines SN3711 · 2h 05m · direct' },
+      { d: '18:00', a: '20:05', from: 'BCN', to: 'BRU', date: 'Sat 13 Mar', meta: 'Brussels Airlines SN3712 · 2h 05m · direct' }],
+    why: 'Best overall value among the 5 offers retrieved. €60 more than the lowest fare, but 7h 35m less travel time, no connection and no 06:00 departure.' },
+  { role: 'Lowest price found', price: 150, legs: [
+      { d: '06:00', a: '15:40', from: 'BRU', to: 'BCN', date: 'Wed 10 Mar', meta: 'Lufthansa LH1001 + LH1130 · 9h 40m · 1 stop, Frankfurt 6h 30m' },
+      { d: '18:00', a: '20:05', from: 'BCN', to: 'BRU', date: 'Sat 13 Mar', meta: 'Lufthansa LH1131 · 2h 05m · direct' }],
+    why: 'Lowest price among the 5 offers retrieved.', caveat: 'Very early departure 06:00 from BRU · Long layover at FRA (6h)' },
+  { role: 'More offers', price: 185, partial: true, legs: [
+      { d: '20:00', a: '22:05', from: 'BRU', to: 'BCN', date: 'Wed 10 Mar', meta: 'Vueling VY8181 · 2h 05m · direct' }],
+    why: 'Round trip from €185. The return flight is chosen when you select this outbound flight.' },
+];
+
+const STAYS = [
+  { role: 'Recommended best value', rec: true, name: 'Casa Gràcia', area: 'Gràcia · 1.2 km from your plan', total: 290, taxes: 'not itemised', score: '9.2/10', cancel: 'Check terms on booking site', room: 'Room type chosen on provider site' },
+  { role: 'More comfortable', name: 'Hotel Central Barcelona', area: 'Ciutat Vella · 0.3 km from your plan', total: 330, taxes: '€30.00', score: '8.8/10', cancel: 'Free cancellation offered by a seller', room: 'Room type chosen on provider site' },
+];
+
+const SRC_OSM = (n, id) => ({ t: `${n} on OpenStreetMap (© OpenStreetMap contributors)`, u: `https://www.openstreetmap.org/${id}` });
+const DAYS = [
+  { label: 'Wed', date: '10 Mar', status: 'ok', weather: 'Forecast 10–18°C · 10% rain', items: [
+    { t: '12:37', k: 'minor', title: 'Land at BCN 11:05 (SN3711), then ~47 min transfer (planning estimate)' },
+    { t: '12:41', title: 'Lunch at Teresa Carles', addr: 'Carrer de Jovellanos 2, Barcelona', why: 'Fully vegetarian menu', diet: 'Fully vegetarian/vegan venue according to OpenStreetMap. Ask staff before ordering.', hours: 'Mo–Su 09:00–23:30', src: SRC_OSM('Teresa Carles', 'node/11') },
+    { t: '13:52', title: 'Catedral de Barcelona', addr: 'Barri Gòtic', why: 'Matches your interest in architecture', caveat: 'Admission price not confirmed by a current source.', hours: 'Mo–Sa 08:30–19:30', src: SRC_OSM('Catedral de Barcelona', 'node/24') },
+    { t: '16:06', k: 'minor', title: 'Check in at Casa Gràcia' },
+    { t: '18:30', title: 'Dinner at Flax & Kale', addr: 'Carrer dels Tallers 74', why: 'Vegetarian options', diet: 'OpenStreetMap lists vegetarian options. Ask staff before ordering.', hours: 'Mo–Su 10:00–23:00', src: SRC_OSM('Flax & Kale', 'node/12') }],
+    notes: ['Sagrada Família skipped: closed or not enough opening time left after check-in.', 'Local dish to look for: escalivada (smoky roasted vegetables), from Wikivoyage.'] },
+  { label: 'Thu', date: '11 Mar', status: 'warn', weather: 'Forecast 10–18°C · 10% rain', missing: 'Lunch: candidate venues are closed or too far for the available time', items: [
+    { t: '07:00', k: 'minor', title: 'Wake up and get ready (45 min)' },
+    { t: '07:49', title: 'Breakfast at Green Morning Café', addr: 'Carrer Nou 5', why: 'Vegan-friendly café near your stay', diet: 'OpenStreetMap lists vegetarian options.', hours: 'Mo–Su 07:30–16:00', src: SRC_OSM('Green Morning Café', 'node/13') },
+    { t: '08:45', title: 'Catedral de Barcelona', addr: 'Barri Gòtic', why: 'Quiet early visit before the crowds', hours: 'Mo–Sa 08:30–19:30', src: SRC_OSM('Catedral de Barcelona', 'node/24') },
+    { t: '11:22', title: 'Hike: Carretera de les Aigües', addr: 'Collserola hillside', why: 'Flat panoramic path above the city (9.5 km)', caveat: 'Opening hours unknown. Check official trail notices for closures on the day.', src: { t: 'Carretera de les Aigües on OpenStreetMap', u: 'https://www.openstreetmap.org/relation/31' } },
+    { t: '18:30', title: 'Dinner at Teresa Carles', addr: 'Carrer de Jovellanos 2', why: 'Fully vegetarian menu', hours: 'Mo–Su 09:00–23:30', src: SRC_OSM('Teresa Carles', 'node/11') }] },
+  { label: 'Fri', date: '12 Mar', status: 'ok', weather: 'Forecast 10–18°C · 10% rain', items: [
+    { t: '07:49', title: 'Breakfast at Green Morning Café', addr: 'Carrer Nou 5', why: 'Vegan-friendly café', hours: 'Mo–Su 07:30–16:00', src: SRC_OSM('Green Morning Café', 'node/13') },
+    { t: '10:00', title: 'Museu Picasso', addr: 'Carrer de Montcada 15', why: 'Matches your interest in art and architecture', caveat: 'Admission price not confirmed by a current source.', hours: 'Tu–Su 10:00–19:00 · Mo closed', src: SRC_OSM('Museu Picasso', 'node/22') },
+    { t: '12:14', title: 'Lunch at Green Morning Café', addr: 'Carrer Nou 5', why: 'Vegetarian lunch near the museum', src: SRC_OSM('Green Morning Café', 'node/13') },
+    { t: '13:38', title: 'Park Güell', addr: 'Carrer d’Olot', why: 'Gaudí architecture with city views', caveat: 'Opening hours for this date could not be confirmed.', src: SRC_OSM('Park Güell', 'way/23') },
+    { t: '18:30', title: 'Dinner at Teresa Carles', addr: 'Carrer de Jovellanos 2', why: 'Fully vegetarian menu', src: SRC_OSM('Teresa Carles', 'node/11') }] },
+  { label: 'Sat', date: '13 Mar', status: 'ok', weather: 'Forecast 10–18°C · 10% rain', items: [
+    { t: '07:49', title: 'Breakfast at Green Morning Café', addr: 'Carrer Nou 5', why: 'Vegan-friendly café', src: SRC_OSM('Green Morning Café', 'node/13') },
+    { t: '10:45', k: 'minor', title: 'Check out (confirm the property deadline)' },
+    { t: '11:24', title: 'Park Güell', addr: 'Carrer d’Olot', why: 'Morning visit before your flight', src: SRC_OSM('Park Güell', 'way/23') },
+    { t: '13:48', title: 'Lunch at Teresa Carles', addr: 'Carrer de Jovellanos 2', why: 'Fully vegetarian menu', src: SRC_OSM('Teresa Carles', 'node/11') },
+    { t: '14:58', k: 'minor', title: 'Leave for BCN airport (SN3712 departs 18:00; 135 min buffer + ~47 min transfer)' }] },
+];
+
+const BRIEFING = `Hi Tejash, your trip (Barcelona) starts tomorrow.
+
+Flight: SN3711 BRU 09:00 → BCN 11:05
+Check-in: NOT confirmed — complete online check-in with the airline
+Wake up 05:31, leave home 06:16.
+Transfer: 29 min to BRU (planning assumption), at airport by 06:45
+Stay: Casa Gràcia
+Weather: Forecast 10–18°C, 10% rain
+
+Day 1: 12:41 Lunch at Teresa Carles · 13:52 Catedral de Barcelona · 16:06 Check in · 18:30 Dinner at Flax & Kale
+
+Send /stop to stop reminders.`;
+
+const view = document.getElementById('view');
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const eur = (n) => `€${n.toFixed(2)}`;
+let dayIdx = 0;
+
+function tripHead(extra = '') {
+  return `<div class="trip-head"><span class="route">${TRIP.route}</span><h1>${TRIP.title}</h1><p>${TRIP.dates} · ${TRIP.travellers} traveller</p>${extra}</div>`;
+}
+
+const screens = {
+  trips: () => `
+    ${tripHead(`<div class="status-row"><span class="pill warn">Plan: 1 day incomplete</span><span class="pill info">Flight selected</span><span class="pill ok">Reminders on</span></div>`)}
+    <div class="stats">
+      <div class="stat"><b>€500</b><span>flight + stay</span></div>
+      <div class="stat"><b>3</b><span>nights covered</span></div>
+      <div class="stat"><b>15</b><span>sourced places</span></div>
+    </div>
+    <div class="card ticket">
+      <p class="eyebrow">Next up</p>
+      <h3>SN3711 · BRU → BCN</h3>
+      <p class="mono" style="margin:0">Wed 10 Mar · 09:00 → 11:05</p>
+      <p class="fine">Briefing arrives Tue 9 Mar at 18:00 on Telegram.</p>
+    </div>
+    <div class="section-title"><h2>Jump to</h2></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <a class="btn" href="#itinerary" style="text-align:center;text-decoration:none">Day-by-day plan</a>
+      <a class="btn ghost" href="#flights" style="text-align:center;text-decoration:none">Flights</a>
+    </div>
+    <p class="fine">Prices and places shown come from a test run with simulated providers, so they are examples, not live data.</p>`,
+
+  flights: () => `
+    ${tripHead()}
+    <p class="notice info">Prices come from Google Flights at search time. Baggage and fare rules are not reported by this source; check them with the seller before paying.</p>
+    ${FLIGHTS.map((f, i) => `
+      <article class="card ${f.rec ? 'rec' : ''}">
+        <p class="eyebrow">${f.role}</p>
+        <p class="price">${eur(f.price)} <small>${f.partial ? 'round trip from' : 'total'}</small></p>
+        ${f.legs.map((l) => `
+          <div class="leg">
+            <span class="t">${l.d}</span><span class="line" aria-hidden="true"></span><span class="t">${l.a}</span>
+            <span class="ap">${l.from}</span><span class="ap" style="text-align:center">${l.date}</span><span class="ap" style="text-align:right">${l.to}</span>
+            <span class="meta">${l.meta}</span>
+          </div>`).join('')}
+        <p class="why">${f.why}</p>
+        ${f.caveat ? `<p class="caveat">${f.caveat}</p>` : ''}
+        <p class="fine">Quoted Wed 4 Nov 2026, 17:28 · price re-checked before booking</p>
+        <button class="btn ${f.rec ? '' : 'ghost'}" data-book="${i}">Select this flight</button>
+      </article>`).join('')}`,
+
+  stays: () => `
+    ${tripHead()}
+    <p class="notice ok">All 3 nights are covered by the recommended stay.</p>
+    <div class="night-bar" aria-label="Nights covered"><div>Wed 10</div><div>Thu 11</div><div>Fri 12</div></div>
+    ${STAYS.map((s) => `
+      <article class="card ${s.rec ? 'rec' : ''}">
+        <p class="eyebrow">${s.role}</p>
+        <h3>${s.name}</h3>
+        <p class="fine" style="margin-top:-4px">${s.area}</p>
+        <p class="price">${eur(s.total)} <small>for 3 nights</small></p>
+        <dl class="kv">
+          <dt>Guest score</dt><dd>${s.score}</dd>
+          <dt>Taxes & fees</dt><dd>${s.taxes}</dd>
+          <dt>Cancellation</dt><dd>${s.cancel}</dd>
+          <dt>Room</dt><dd>${s.room}</dd>
+        </dl>
+        <button class="btn ${s.rec ? '' : 'ghost'}" data-stay="${esc(s.name)}">Select</button>
+      </article>`).join('')}
+    <p class="fine">Airbnb: external search only. No Airbnb listings or prices are shown here because there is no authorised live feed.</p>`,
+
+  itinerary: () => {
+    const d = DAYS[dayIdx];
+    return `
+    ${tripHead()}
+    <div class="days" role="tablist" aria-label="Trip days">
+      ${DAYS.map((x, i) => `<button class="day-chip" role="tab" aria-selected="${i === dayIdx}" data-day="${i}"><span>${x.label}<i class="dot" style="background:var(--${x.status === 'ok' ? 'ok' : 'warn'})"></i></span><strong>${x.date}</strong></button>`).join('')}
+    </div>
+    <div class="card">
+      <div class="weather"><span>${d.weather}</span>${d.status === 'ok' ? '<span class="pill ok">Verified sources</span>' : '<span class="pill warn">Incomplete</span>'}</div>
+      ${d.missing ? `<p class="notice warn"><strong>Missing:</strong> ${d.missing}</p>` : ''}
+      <ol class="timeline">
+        ${d.items.map((it) => `
+          <li class="it ${it.k === 'minor' ? 'minor' : ''}">
+            <span class="time">${it.t}</span>
+            <div class="body">
+              <p class="title">${esc(it.title)}</p>
+              ${it.addr ? `<p class="addr">${esc(it.addr)}</p>` : ''}
+              ${it.why ? `<p class="why">${esc(it.why)}</p>` : ''}
+              ${it.diet ? `<p class="caveat">${esc(it.diet)}</p>` : ''}
+              ${it.caveat ? `<p class="caveat">${esc(it.caveat)}</p>` : ''}
+              ${it.hours || it.src ? `<details><summary>Hours & sources</summary>${it.hours ? `<p class="srcs">Opening hours: ${esc(it.hours)}</p>` : ''}${it.src ? `<p class="srcs"><a href="${it.src.u}" rel="noopener noreferrer">${esc(it.src.t)}</a> · retrieved 4 Nov 2026, 17:28</p>` : ''}</details>` : ''}
+            </div>
+          </li>`).join('')}
+      </ol>
+      ${d.notes ? `<ul class="notes">${d.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost small" data-toast="Regenerating ${d.label} ${d.date} (in the real app this re-researches only this day)">Regenerate day</button><button class="btn ghost small" data-toast="Pace changes re-time the day without new research">Change pace</button></div>
+    </div>`;
+  },
+
+  reminders: () => `
+    ${tripHead()}
+    <div class="card">
+      <div class="section-title"><h2>Telegram</h2><span class="pill ok">Connected</span></div>
+      <p class="why">Briefing the day before departure at 18:00, then a daily schedule each morning at 07:30 local time.</p>
+    </div>
+    <div class="chat" aria-label="Telegram preview">
+      <div class="bubble">Connected to Travel Compass. Turn on reminders in the app to receive briefings here.<span class="bt">17:27</span></div>
+      <div class="bubble">${esc(BRIEFING)}<span class="bt">Tue 9 Mar 18:00</span></div>
+    </div>
+    <div class="card">
+      <h3>Scheduled</h3>
+      <ul class="sched">
+        <li><span>Pre-trip briefing<br><span class="fine mono">Tue 9 Mar 18:00</span></span><span class="pill ok">Delivered</span></li>
+        <li><span>Daily schedule<br><span class="fine mono">Wed 10 Mar 07:30</span></span><span class="pill info">Scheduled</span></li>
+        <li><span>Daily schedule<br><span class="fine mono">Thu 11 Mar 07:30</span></span><span class="pill info">Scheduled</span></li>
+        <li><span>Daily schedule<br><span class="fine mono">Fri 12 Mar 07:30</span></span><span class="pill info">Scheduled</span></li>
+        <li><span>Daily schedule<br><span class="fine mono">Sat 13 Mar 07:30</span></span><span class="pill info">Scheduled</span></li>
+      </ul>
+    </div>`,
+};
+
+function render() {
+  const name = (location.hash || '#trips').slice(1);
+  const v = screens[name] ? name : 'trips';
+  view.innerHTML = screens[v]();
+  document.querySelectorAll('nav.tabs a').forEach((a) => { if (a.dataset.v === v) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+  window.scrollTo(0, 0);
+}
+
+// Bottom sheet: the booking flow
+const sheet = document.getElementById('sheet');
+const scrim = document.getElementById('scrim');
+function openSheet(html) { sheet.innerHTML = `<div class="grab" aria-hidden="true"></div>${html}`; sheet.classList.add('open'); scrim.classList.add('open'); sheet.querySelector('button, input')?.focus(); }
+function closeSheet() { sheet.classList.remove('open'); scrim.classList.remove('open'); }
+scrim.addEventListener('click', closeSheet);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
+
+function bookStep(f, step) {
+  const steps = ['Check price', 'Review', 'Choose seller'];
+  const bar = `<ol class="steps">${steps.map((s, i) => `<li class="${i < step ? 'done' : i === step ? 'now' : ''}">${i + 1}. ${s}</li>`).join('')}</ol>`;
+  const head = `<h2 id="sheet-title">Book this flight</h2>${bar}`;
+  if (step === 0) return openSheet(`${head}<p class="why">Quoted ${eur(f.price)} on 4 Nov 2026. Prices change, so we check with Google Flights again before you continue.</p><button class="btn" data-next="1">Check current price</button><button class="btn ghost" data-close>Cancel</button>`);
+  if (step === 1) return openSheet(`${head}<p class="notice ok">Price confirmed: ${eur(f.price)}</p>
+    <h3>Important conditions</h3><ul class="notes"><li>Refunds and changes: not reported by this source</li><li>Baggage: not reported; check with the seller</li></ul>
+    <label class="check" for="ack"><input type="checkbox" id="ack"> I have reviewed the total of ${eur(f.price)} and these conditions for this specific flight.</label>
+    <button class="btn" data-next="2">Continue</button>`);
+  openSheet(`${head}<p class="notice info">Choose a seller. You review the final price and pay on the seller's site. Travel Compass never sees your card. Flights: ${f.legs.map((l) => l.meta.split(' · ')[0].split(' ').pop()).join(' / ')}.</p>
+    <div class="seller"><div><strong>Brussels Airlines</strong><br><span class="mono">${eur(f.price)}</span></div><button class="btn small" data-toast="In the app this opens the seller's own booking page">Go to seller</button></div>
+    <p class="fine">After booking, import the confirmation from Gmail or add the reference under Bookings.</p>
+    <button class="btn ghost" data-close>Done</button>`);
+}
+
+let current = null;
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('button');
+  if (!t) return;
+  if (t.dataset.day) { dayIdx = Number(t.dataset.day); render(); return; }
+  if (t.dataset.book) { current = FLIGHTS[Number(t.dataset.book)]; bookStep(current, 0); return; }
+  if (t.dataset.next) {
+    if (t.dataset.next === '2' && !document.getElementById('ack')?.checked) { toast('Tick the box to confirm you reviewed the price'); return; }
+    bookStep(current, Number(t.dataset.next)); return;
+  }
+  if (t.hasAttribute('data-close')) { closeSheet(); return; }
+  if (t.dataset.stay) { openSheet(`<h2 id="sheet-title">${t.dataset.stay}</h2><p class="why">In the app this re-checks the price, then opens the property or Google Hotels page where you confirm taxes and cancellation terms before paying.</p><button class="btn ghost" data-close>Close</button>`); return; }
+  if (t.dataset.toast) toast(t.dataset.toast);
+});
+
+function toast(msg) {
+  const el = document.createElement('div');
+  el.setAttribute('role', 'status');
+  el.textContent = msg;
+  el.style.cssText = 'position:fixed;left:16px;right:16px;bottom:calc(env(safe-area-inset-bottom) + 84px);margin:0 auto;max-width:440px;background:var(--ink);color:var(--paper);padding:10px 14px;border-radius:12px;z-index:20;font-size:.9rem;box-shadow:var(--shadow)';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2600);
+}
+
+window.addEventListener('hashchange', render);
+render();
+</script>
+</body>
+</html>

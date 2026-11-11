@@ -1,0 +1,59 @@
+# Render Blueprint: one free web service (web + background worker in one process).
+# Database: Neon free Postgres (Render's free Postgres expires after 30 days), see docs/DEPLOY_FREE.md.
+# Secrets marked sync: false are entered in the Render dashboard when you apply the Blueprint, never in git.
+services:
+  - type: web
+    name: travel-compass
+    runtime: docker
+    plan: free
+    region: frankfurt
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RUN_WORKER_IN_PROCESS
+        value: "true"
+      - key: WORKER_IDLE_MAX_SECONDS        # sleep until the next job is due, so Neon can scale to zero
+        value: "1800"
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: TOKEN_ENCRYPTION_KEY           # Render generates a random 256-bit base64 value
+        generateValue: true
+      - key: DATABASE_URL                   # Neon "Direct connection" string, ending in ?sslmode=require
+        sync: false
+      - key: ADMIN_EMAILS                   # the email you will sign up with
+        sync: false
+      - key: EMAIL_LOG_ONLY                 # true = read sign-up links in Render's Logs tab; false + RESEND_API_KEY for real emails
+        value: "true"
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: SERPAPI_API_KEY                # free: 250 searches/month
+        sync: false
+      - key: SERPAPI_MONTHLY_LIMIT
+        value: "240"
+      - key: AI_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: AI_MODEL
+        value: llama-3.3-70b-versatile
+      - key: AI_API_KEY                     # free Groq key
+        sync: false
+      - key: AI_INPUT_USD_PER_MTOK
+        value: "0"
+      - key: AI_OUTPUT_USD_PER_MTOK
+        value: "0"
+      - key: OPEN_METEO_ALLOW_FREE_TIER     # non-commercial use only
+        value: "true"
+      - key: TELEGRAM_BOT_TOKEN             # optional, free reminders
+        sync: false
+      - key: TELEGRAM_BOT_USERNAME
+        sync: false
+      - key: TELEGRAM_MODE                  # webhook is registered automatically at start-up
+        value: webhook
+      - key: CALLMEBOT_ENABLED              # free WhatsApp to your own number (each user brings their CallMeBot key)
+        value: "true"
+      - key: GOOGLE_CLIENT_ID               # optional: Google sign-in + Gmail import
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false

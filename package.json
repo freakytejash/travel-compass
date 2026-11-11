@@ -1,0 +1,31 @@
+{
+  "name": "travel-compass",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Travel Compass: consumer travel planning with live flights, stays, research-backed itineraries, Gmail reservation import and WhatsApp reminders.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "build:web": "node scripts/build-web.mjs",
+    "build": "npm run typecheck && npm run build:web",
+    "typecheck": "tsc -p tsconfig.json",
+    "db:migrate": "node src/server/db/migrate.ts",
+    "db:create-admin": "node scripts/create-admin.ts",
+    "start": "node src/server/main.ts",
+    "start:worker": "node src/server/jobs/worker-main.ts",
+    "dev": "npm run build:web && node --watch src/server/main.ts",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "test:unit": "node --test \"test/unit/**/*.test.ts\"",
+    "test:integration": "node --test --test-concurrency=1 \"test/integration/**/*.test.ts\"",
+    "check:integrations": "node scripts/check-integrations.ts",
+    "airports:download": "node scripts/download-airports.ts",
+    "telegram:webhook": "node scripts/telegram-webhook.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0"
+  }
+}
