@@ -46,8 +46,6 @@ export interface RequestOpts {
   userId?: string | null;
   /** Only idempotent operations are retried by default. */
   idempotent?: boolean;
-  /** Return the raw response body instead of parsing JSON (for non-JSON APIs). */
-  text?: boolean;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -83,7 +81,6 @@ export async function requestJson<T>(url: string, o: RequestOpts): Promise<T> {
         throw new ProviderError(o.provider, `HTTP ${res.status} on ${o.operation}`, res.status, retryable, text.slice(0, 500));
       }
       recordUsage({ provider: o.provider, operation: o.operation, status: 'ok', httpStatus: res.status, latencyMs, userId: o.userId });
-      if (o.text) return text as unknown as T;
       return (text ? JSON.parse(text) : {}) as T;
     } catch (e) {
       if (e instanceof ProviderError) throw e;

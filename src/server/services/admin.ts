@@ -8,7 +8,7 @@ export async function readiness(ctx: AppContext) {
       count(*) FILTER (WHERE status='error' AND created_at > now() - interval '24 hours')::int AS errors_24h, count(*) FILTER (WHERE created_at > now() - interval '24 hours')::int AS calls_24h
     FROM provider_usage GROUP BY provider`);
   const byProv = new Map(lastOk.rows.map((r) => [r.provider, r]));
-  const providerKey: Record<string, string> = { duffel_flights: 'duffel', duffel_stays: 'duffel', duffel_links: 'duffel', booking_com: 'booking_com', google_places: 'google_places', google_routes: 'google_routes', weather: 'open_meteo', ai: 'anthropic', research: 'brave_search', gmail: 'gmail', whatsapp: 'whatsapp', email: 'resend', google_login: 'google_oauth', serpapi: 'serpapi', osm: 'overpass', wikimedia: 'wikimedia', ai_compat: 'openai_compatible', geo_free: 'photon', telegram: 'telegram', callmebot: 'callmebot' };
+  const providerKey: Record<string, string> = { duffel_flights: 'duffel', duffel_stays: 'duffel', duffel_links: 'duffel', booking_com: 'booking_com', google_places: 'google_places', google_routes: 'google_routes', weather: 'open_meteo', ai: 'anthropic', research: 'brave_search', gmail: 'gmail', whatsapp: 'whatsapp', email: 'resend', google_login: 'google_oauth', serpapi: 'serpapi', osm: 'overpass', wikimedia: 'wikimedia', ai_compat: 'openai_compatible', geo_free: 'photon', telegram: 'telegram' };
   return list.map((i) => {
     const u = byProv.get(providerKey[i.key] ?? i.key);
     // "verified_live" requires at least one successful live call recorded by this deployment.

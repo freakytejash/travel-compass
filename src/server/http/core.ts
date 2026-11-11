@@ -95,8 +95,6 @@ export function errorResponse(e: unknown): { status: number; body: { error: { co
   if (e instanceof QuotaExceededError) return { status: 429, body: { error: { code: 'free_quota_used', message: e.message, retryable: false } } };
   if (e instanceof AiBudgetExceeded) return { status: 429, body: { error: { code: 'ai_limit_reached', message: 'Planning limit reached for today. Your saved trips are unaffected; please try again tomorrow.', retryable: false } } };
   if (e instanceof ProviderError) return { status: 502, body: { error: { code: 'provider_unavailable', message: 'A travel data service did not respond. Your saved work is unaffected; please retry.', retryable: e.retryable } } };
-  // A database rule rejected the input (e.g. dates in the wrong order): that's the customer's input, not a server fault.
-  if (e instanceof PgError && e.code === '23514') return { status: 400, body: { error: { code: 'invalid_input', message: 'Some details don\'t fit together (for example a return date before the departure date). Please check and try again.', retryable: false } } };
   if (e instanceof PgError && e.code === '23505') return { status: 409, body: { error: { code: 'conflict', message: 'This record already exists.', retryable: false } } };
   log.error('unhandled error', { error: (e as Error)?.message, stack: (e as Error)?.stack?.split('\n').slice(0, 5).join(' | ') });
   return { status: 500, body: { error: { code: 'internal_error', message: 'Something went wrong on our side. Your saved work is unaffected.', retryable: true } } };

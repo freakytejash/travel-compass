@@ -50,7 +50,6 @@ export async function listTrips(ctx: AppContext, userId: string) {
 
 export async function createTrip(ctx: AppContext, userId: string, i: TripInput) {
   const stops = i.stops ?? [];
-  if (i.startDate && i.endDate && i.endDate < i.startDate) throw new HttpError(400, 'invalid_input', 'The return date is before the departure date. Choose a return date on or after you leave.');
   validateStops(stops, i.startDate, i.endDate);
   return ctx.db.tx(async (q) => {
     const prof = await q.query<{ currency: string; budget_total: string | null }>('SELECT currency, budget_total FROM profiles WHERE user_id=$1', [userId]);
@@ -71,7 +70,7 @@ export async function updateTrip(ctx: AppContext, userId: string, tripId: string
       throw new HttpError(409, 'version_conflict', 'This trip was changed in another window or device.', { details: { server: { ...cur, stops: await getStops(q, tripId) } } });
     }
     const merged = { ...cur, ...Object.fromEntries(Object.entries(i).filter(([, v]) => v !== undefined)) } as Trip & TripInput;
-    if (merged.startDate && merged.endDate && merged.endDate < merged.startDate) throw new HttpError(400, 'invalid_input', 'The return date is before the departure date. Choose a return date on or after you leave.');
+    if (merged.startDate && merged.endDate && merged.endDate < merged.startDate) throw new HttpError(400, 'invalid_input', 'End date is before start date');
     if (i.stops) validateStops(i.stops, merged.startDate, merged.endDate);
     const datesChanged = i.startDate !== undefined && i.startDate !== cur.startDate || i.endDate !== undefined && i.endDate !== cur.endDate || i.stops !== undefined;
     const r = await q.query(

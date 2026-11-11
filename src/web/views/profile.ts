@@ -38,12 +38,8 @@ export async function profileView(root: HTMLElement, onboarding = false) {
   } } },
     h('fieldset', null, h('legend', null, 'About you'),
       field('Display name', txt(state.displayName ?? '', (s) => (state.displayName = s), { maxlength: 80 })),
-      placePicker({ label: 'Home city', value: state.homePlace, allowLocate: true, onChange: (pl) => {
-        state.homePlace = pl; if (pl?.timeZone) state.timeZone = pl.timeZone;
-        // Pre-fill departure airports with the airports near home; the flight search also adds others within 150 km.
-        if (pl && !state.departureAirports.length) { for (const a of pl.kind === 'airport' ? [{ iata: pl.iata!, name: pl.name, cityName: pl.cityName }] : (pl.airports ?? []).map((a) => ({ iata: a.iata, name: a.name, cityName: pl.name }))) if (state.departureAirports.length < 5) state.departureAirports.push(a); renderAirports(); }
-      } }),
-      h('div', { class: 'field' }, h('span', { class: 'label' }, 'Preferred departure airports'), airports, h('small', { class: 'hint' }, 'Filled in from your home city. Flight searches also check other sizeable airports within 150 km in the same search and pick the cheapest overall, including getting to the airport.')), addAirport,
+      placePicker({ label: 'Home city', value: state.homePlace, allowLocate: true, onChange: (pl) => { state.homePlace = pl; if (pl?.timeZone) state.timeZone = pl.timeZone; } }),
+      h('div', { class: 'field' }, h('span', { class: 'label' }, 'Preferred departure airports'), airports), addAirport,
       h('div', { class: 'grid2' }, field('Time zone', txt(state.timeZone, (s) => (state.timeZone = s), { list: 'tzlist' })), field('Currency', txt(state.currency, (s) => (state.currency = s), { maxlength: 3, pattern: '[A-Za-z]{3}' }))),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: state.contactEmailOptIn, on: { change: (e: Event) => (state.contactEmailOptIn = (e.target as HTMLInputElement).checked) } }), 'Email me trip updates (optional)')),
     h('fieldset', null, h('legend', null, 'Food'),

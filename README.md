@@ -2,9 +2,7 @@
 
 Consumer travel planning: choose an affordable destination, compare **live** flight and accommodation offers (including ±1–3 day flexible dates by complete trip cost), get a day-by-day itinerary of **named, sourced** venues (vegetarian by default for profiles that set it), organise reservations (with optional Gmail import) and receive WhatsApp briefings.
 
-> **Deploy it for free with a public URL:** [docs/DEPLOY_FREE.md](docs/DEPLOY_FREE.md) (Render + Neon, WhatsApp via CallMeBot).
-
-> **Run it for free on your own computer:** see [docs/FREE_SETUP.md](docs/FREE_SETUP.md) — Google Flights/Hotels via SerpApi's free plan, OpenStreetMap, Wikivoyage, Groq or local Ollama, Telegram reminders, Open-Meteo.
+> **Run it for free:** see [docs/FREE_SETUP.md](docs/FREE_SETUP.md) — Google Flights/Hotels via SerpApi's free plan, OpenStreetMap, Wikivoyage, Groq or local Ollama, Telegram reminders, Open-Meteo.
 
 > **Status:** implemented and tested locally against PostgreSQL with mocked providers. **No provider integration has been verified live yet** — see [docs/FEATURE_STATUS.md](docs/FEATURE_STATUS.md). Do not treat it as customer-ready until the [administrator checklist](docs/ADMIN_CHECKLIST.md) is complete.
 
@@ -19,7 +17,7 @@ Consumer travel planning: choose an affordable destination, compare **live** fli
 | Auth | Email + password (scrypt) with verified email and recovery; Google sign-in (OIDC, PKCE); server-side sessions; CSRF tokens + origin checks |
 | Frontend | Typed vanilla TS SPA bundled by esbuild (`public/app.js`), responsive, accessible combobox, light/dark |
 | Integrations (paid) | Duffel (flights, places, stays, Links checkout), Booking.com Demand API, Google Places (New) & Routes, Anthropic, Brave Search, WhatsApp Cloud API, Resend |
-| Integrations (free) | SerpApi Google Flights & Hotels, Photon + OurAirports, OpenStreetMap Overpass, Wikivoyage/Wikipedia, OpenAI-compatible AI (Groq, Ollama), Telegram Bot API, WhatsApp via CallMeBot (personal), Open-Meteo, Gmail API |
+| Integrations (free) | SerpApi Google Flights & Hotels, Photon + OurAirports, OpenStreetMap Overpass, Wikivoyage/Wikipedia, OpenAI-compatible AI (Groq, Ollama), Telegram Bot API, Open-Meteo, Gmail API |
 | Provider choice | Automatic: a paid provider is used when its key is set, otherwise the free one |
 
 Runtime dependencies: **none**. Dev dependencies: `typescript`, `esbuild`, `@types/node`.
@@ -48,13 +46,7 @@ Runtime dependencies: **none**. Dev dependencies: `typescript`, `esbuild`, `@typ
 | `docker compose --profile local-ai up -d` | Also start a local Ollama server (free, private AI) |
 | `docker compose exec ollama ollama pull qwen2.5:7b` | Download a local model for Ollama |
 | `docker compose logs web \| grep verify-email` | Read your sign-up link when `EMAIL_LOG_ONLY=true` |
-| `node --test test/unit/ideas.test.ts` | Unit tests for holiday windows, trip-idea ranking, booking links and Brevo email |
-| `node --test test/integration/ideas-book.test.ts` | Dashboard → trip ideas → choose → multi-airport flights → Book everything (needs test DB) |
-| `curl "https://<your-url>/api/public/windows?country=BE&months=6"` | Check the public holiday/long-weekend data on a deployment |
-| `git am 0001-*.patch && git push` | Apply a patch file from Claude to your repo; Render redeploys on push |
 | `cp .env.free.example .env` | Start from the zero-cost configuration |
-| `git remote add origin https://github.com/<you>/travel-compass.git && git push -u origin main` | Put the code on GitHub for Render to deploy (Render → New → Blueprint reads `render.yaml`) |
-| `curl https://<your-url>/api/ready` | Check a deployed instance and its database are up |
 | `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` | Generate `TOKEN_ENCRYPTION_KEY` |
 
 ## Local setup
@@ -71,7 +63,7 @@ npm start                            # http://localhost:3000
 npm test
 ```
 
-Without provider credentials the app still runs: accounts, profiles, trips, autosave, reservations and the admin page work; live searches, plan generation and reminders respond with a clear "not available yet" message and **never** substitute placeholder data. In development, verification emails are printed to the log when no email key is set (never in production unless `EMAIL_LOG_ONLY=true`). For real emails set `BREVO_API_KEY` (free 300/day) — see docs/DEPLOY_FREE.md.
+Without provider credentials the app still runs: accounts, profiles, trips, autosave, reservations and the admin page work; live searches, plan generation and reminders respond with a clear "not available yet" message and **never** substitute placeholder data. In development, verification emails are printed to the log when `RESEND_API_KEY` is unset (never in production).
 
 ## How it works
 
@@ -82,7 +74,6 @@ Without provider credentials the app still runs: accounts, profiles, trips, auto
 
 ## Documentation
 
-- [docs/DEPLOY_FREE.md](docs/DEPLOY_FREE.md) — free public deployment (Render + Neon) and the WhatsApp options
 - [docs/FREE_SETUP.md](docs/FREE_SETUP.md) — zero-cost setup and what each free provider gives up
 - [docs/FEATURE_STATUS.md](docs/FEATURE_STATUS.md) — precise status of every feature
 - [docs/ADMIN_CHECKLIST.md](docs/ADMIN_CHECKLIST.md) — credentials, approvals and go-live steps (incl. WhatsApp templates)

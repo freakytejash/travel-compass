@@ -16,8 +16,7 @@ The admin page (`/admin`) shows the same information at runtime and marks an int
 |---|---|
 | Registration, verified email, login, logout, password recovery, session revocation on reset | Tested locally |
 | Google sign-in (OIDC + PKCE) | Awaiting credentials (`GOOGLE_CLIENT_ID/SECRET`); token exchange not tested end-to-end |
-| Transactional email (Brevo free 300/day, or Resend) | Brevo request format tested with a simulated API; awaiting `BREVO_API_KEY` for a live send |
-| Public dashboard (no sign-in): city search, holiday windows, nearby airports | Tested locally |
+| Transactional email (Resend) | Awaiting credentials |
 | Profile: home city, airports, time zone, currency, diet, allergies, budget, pace, interests, hiking, room preference, wake/prep times | Tested locally |
 | Server-enforced per-customer data separation | Tested locally (two-user test across trips, searches, offers, reservations, admin) |
 | Account export (JSON) and deletion (with Gmail revocation and job cancellation) | Tested locally |
@@ -45,11 +44,7 @@ The admin page (`/admin`) shows the same information at runtime and marks an int
 | Replace venue, move activity, change pace, regenerate one day | Tested locally (move, pace, single-day regenerate); replace uses the same path |
 | Autosave with conflict detection | Tested locally |
 | Live traffic transfer times (Google Routes) | Awaiting credentials; falls back to labelled planning assumptions |
-| Inter-city transport (trains/buses between stops) | No prices; prefilled Rome2Rio links in "Book everything" |
-| Trip ideas: holiday/long-weekend windows (Nager.Date) × cheapest destinations (SerpApi Google Travel Explore) × weather | Tested locally with simulated Nager/SerpApi responses; awaiting live check |
-| All airports within 150 km searched in ONE Google Flights search; transfer cost to each airport included in ranking | Tested locally with simulated SerpApi |
-| Choose an idea → trip created → flights, stays and itinerary searches start automatically | Tested locally |
-| "Book everything" checklist: flights, stays, hostels/Airbnb links, car rental links, transport, tickets, extras; booked items tracked | Tested locally. Car rental and Airbnb/hostel-site prices are **not** loaded (no free price API) — links only |
+| Inter-city transport (trains/buses between stops) | **Not implemented** — shown as an explicit planning assumption |
 
 ## Bookings, Gmail, reminders
 
@@ -82,11 +77,3 @@ All of these are implemented and tested locally against simulated network respon
 | Log-only email for personal self-hosting | Tested locally |
 | Bookable checkout for exactly the chosen fare on the free stack | **Blocked** — no free booking API; the customer books with the seller Google lists |
 | Gemini free tier | **Blocked** for users in the EEA by Google's terms (use Groq or Ollama instead) |
-
-## Free WhatsApp and free hosting (added 2026-11-09)
-
-| Feature | Status |
-|---|---|
-| WhatsApp reminders via CallMeBot (free, personal, own number only): encrypted key, code verification, scheduled briefing marked "sent" (no receipts) | Tested locally with simulated CallMeBot responses (`test/integration/callmebot.test.ts`); not verified live |
-| Meta Cloud API test number (free, up to 5 verified numbers) | Supported by the existing WhatsApp adapter; its default 24-hour access token is impractical for scheduled reminders |
-| Render Blueprint (`render.yaml`) + Neon free Postgres, Telegram webhook auto-registration, idle worker that sleeps until the next job is due | Implemented and the worker timing tested locally; **not deployed** — needs the owner's GitHub, Render and Neon accounts |

@@ -93,7 +93,7 @@ test('integration readiness never reports unconfigured services as configured', 
   for (const k of Object.keys(process.env)) if (/DUFFEL|GOOGLE|WHATSAPP|RESEND|ANTHROPIC|BRAVE|BOOKING|OPEN_METEO/.test(k)) delete process.env[k];
   process.env.NODE_ENV = 'production';
   const r = integrationReadiness(loadConfig());
-  const keyless = ['database', 'encryption', 'geo_free', 'osm', 'wikimedia', 'callmebot', 'holidays']; // free services that need no credentials
+  const keyless = ['database', 'encryption', 'geo_free', 'osm', 'wikimedia']; // free services that need no credentials
   assert.ok(r.filter((x) => !keyless.includes(x.key)).every((x) => x.status === 'awaiting_credentials' || x.key === 'email' && x.status !== 'configured'), JSON.stringify(r.map((x) => [x.key, x.status])));
   Object.assign(process.env, saved);
 });

@@ -4,7 +4,7 @@ Run: `npm test` (needs PostgreSQL at `TEST_DATABASE_URL`; the integration suite 
 
 **All automated tests use mocked providers** (`test/helpers/mocks.ts`) or simulated provider HTTP responses. They prove the application logic, persistence, security rules and failure handling — not that any live provider works. Live verification is done per deployment with `npm run check:integrations` and the manual journey in ADMIN_CHECKLIST.md §11.
 
-Last run (2026-11-11, Node 22.23, PostgreSQL 16): **89 tests, 89 passed, 0 failed**. New: `test/unit/ideas.test.ts` (holiday windows, idea ranking, Travel Explore parsing, booking links, Brevo) and `test/integration/ideas-book.test.ts` (public dashboard → ideas → choose → multi-airport flight search → Book everything).
+Last run (2026-11-04, Node 22.23, PostgreSQL 16): **74 tests, 74 passed, 0 failed.**
 
 | Suite | Covers |
 |---|---|
@@ -14,8 +14,6 @@ Last run (2026-11-11, Node 22.23, PostgreSQL 16): **89 tests, 89 passed, 0 faile
 | `test/integration/planning.test.ts` | Live-shaped flight search & ranking, multi-stop stays, flex dates, sourced vegetarian plan (no placeholders, injection ignored, rain swap, arrival/departure times), move/pace/regenerate-day, provider outage without data loss, reprice/expiry/price-change/handoff without purchase, destination verification |
 | `test/unit/free-adapters.test.ts` | OSM opening-hours conversion and tag mapping, Overpass caching/ranking, OurAirports parsing + Photon search, Google Hotels normalisation (no key leaks), Wikivoyage section selection, OpenAI-compatible JSON-mode fallback, Telegram rendering/parsing/secret |
 | `test/integration/free-stack.test.ts` | Whole free stack through the real server: Google Flights search (UTC times, ranking, price-level offers), reprice + seller handoff (Google-only URLs), Google Hotels night coverage, OSM + Wikivoyage + Groq plan (vegetarian venue, OSM-cited hike, injection ignored), Telegram connect/opt-in/briefing/`/stop`, SerpApi allowance guard |
-| `test/integration/callmebot.test.ts` | Free WhatsApp via CallMeBot: rejected key, code verification, encrypted key, scheduled briefing sent and shown as "sent", opt-out cancels |
-| `test/integration/worker-idle.test.ts` | Idle worker sleeps until the next due job (for scale-to-zero databases) |
 | `test/integration/notifications-gmail.test.ts` | WhatsApp verification, persistent time-zone-aware scheduling, idempotent rescheduling, retry, at-most-once send, signed/duplicate/out-of-order callbacks, STOP opt-out; Gmail OAuth (read-only, PKCE), encrypted tokens, extraction, dedupe, trip association, account-mismatch protection, disconnect + revoke; admin readiness |
 
 A UI walkthrough (register → onboarding → trip → flights → booking dialog → stays → itinerary → admin) was also run in headless Chromium at desktop and 390 px mobile widths against mocked providers, with no console errors.

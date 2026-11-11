@@ -9,7 +9,7 @@ import { recordError } from '../context.ts';
 import { HttpError } from '../http/core.ts';
 import { addDays, daysBetween } from '../domain/time.ts';
 import { pickWindowsToPrice, scoreIdeas, travelWindows, type IdeaCandidate, type TravelWindow } from '../domain/windows.ts';
-import { mapLimit, NotConfiguredError, QuotaExceededError } from '../integrations/http.ts';
+import { mapLimit, NotConfiguredError, QuotaExceededError, explainFailure } from '../integrations/http.ts';
 import type { Place } from '../../shared/types.ts';
 import { getProfile } from './profile.ts';
 import { originAirports } from './searches.ts';
@@ -63,7 +63,7 @@ async function finish(ctx: AppContext, id: string, status: 'complete' | 'partial
 }
 
 export async function failIdeas(ctx: AppContext, id: string, e: Error) {
-  await finish(ctx, id, 'failed', null, e instanceof QuotaExceededError ? e.message : e instanceof NotConfiguredError ? 'Live trip ideas are not available yet (SERPAPI_API_KEY missing).' : 'A travel data service did not respond. Please retry.');
+  await finish(ctx, id, 'failed', null, explainFailure(e));
 }
 
 interface Candidate extends IdeaCandidate { lat: number | null; lng: number | null; thumbnail: string | null; link: string | null; airline: string | null; window: TravelWindow }
@@ -129,19 +129,14 @@ export async function runIdeas(ctx: AppContext, id: string, userId: string) {
   await finish(ctx, id, failedWindows.length ? 'partial' : 'complete', { airports, windows, pricedWindows: chosenWindows.map((w) => w.id), ideas, notes, holidaySource: source }, null);
 }
 
-/** Creates a trip from an idea and starts the live flight, accommodation and itinerary searches. */
-export async function chooseIdea(ctx: AppContext, userId: string, id: string, index: number) {
-  const row = await getIdeas(ctx, userId, id);
-  const idea = row.result?.ideas?.find((x: any) => x.index === index);
-  if (!idea) throw new HttpError(404, 'not_found', 'That trip idea is no longer available. Search again.');
-  const p = row.params as IdeaParams;
-  const iata: string = idea.destination.iata;
-  // Resolve the destination to a city with its airports (falls back to the airport itself).
-  const places = await ctx.providers.flights.searchPlaces(idea.destination.name).catch(() => [] as Place[]);
+/** Matches a Travel Explore destination to a city Place whose first airport is the one priced (falls back to the airport). */
+export async function resolveDestination(ctx: AppContext, d: { name: string; iata: string; lat: number | null; lng: number | null }): Promise<Place | null> {
+  const iata = d.iata;
+  const places = await ctx.providers.flights.searchPlaces(d.name).catch(() => [] as Place[]);
   let place = places.find((x) => x.kind === 'city' && x.airports?.some((a) => a.iata === iata))
-    ?? places.find((x) => x.kind === 'city' && x.countryCode && idea.destination.country && x.lat && idea.destination.lat !== null && Math.abs(x.lat - idea.destination.lat) < 0.6 && Math.abs(x.lng - idea.destination.lng) < 0.6);
+    ?? places.find((x) => x.kind === 'city' && d.lat !== null && d.lng !== null && Math.abs(x.lat - d.lat) < 0.6 && Math.abs(x.lng - d.lng) < 0.6);
   if (!place) place = (await ctx.providers.flights.searchPlaces(iata).catch(() => [] as Place[])).find((x) => x.iata === iata);
-  if (!place) throw new HttpError(502, 'provider_error', 'The destination could not be matched to an airport. Try another idea.');
+  if (!place) return null;
   if (!place.airports?.some((a) => a.iata === iata)) {
     const ap = await ctx.providers.flights.airportInfo?.(iata).catch(() => null);
     if (ap) place = { ...place, iata, airports: [{ iata, name: ap.name, lat: ap.lat, lng: ap.lng }, ...(place.airports ?? [])] };
@@ -149,6 +144,17 @@ export async function chooseIdea(ctx: AppContext, userId: string, id: string, in
     const aps = place.airports ?? [];
     place = { ...place, iata, airports: [...aps.filter((a) => a.iata === iata), ...aps.filter((a) => a.iata !== iata)] };
   }
+  return place;
+}
+
+/** Creates a trip from an idea and starts the live flight, accommodation and itinerary searches. */
+export async function chooseIdea(ctx: AppContext, userId: string, id: string, index: number) {
+  const row = await getIdeas(ctx, userId, id);
+  const idea = row.result?.ideas?.find((x: any) => x.index === index);
+  if (!idea) throw new HttpError(404, 'not_found', 'That trip idea is no longer available. Search again.');
+  const p = row.params as IdeaParams;
+  const place = await resolveDestination(ctx, idea.destination);
+  if (!place) throw new HttpError(502, 'provider_error', 'The destination could not be matched to an airport. Try another idea.');
   const w: TravelWindow = idea.window;
   const trip = await trips.createTrip(ctx, userId, {
     title: `${idea.destination.name} · ${w.label}`.slice(0, 120), origin: p.origin, adults: p.adults, startDate: w.start, endDate: w.end,

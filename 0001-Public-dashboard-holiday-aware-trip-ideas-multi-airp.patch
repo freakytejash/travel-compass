@@ -1,0 +1,2025 @@
+From b03bd49422bb20b71db5ae73d47d1fbfcf2cc1e7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 13:34:31 +0100
+Subject: [PATCH] Public dashboard, holiday-aware trip ideas, multi-airport
+ flight search, Book everything checklist, Brevo email
+
+- Dashboard is the first page and works without an account (city search, long weekends, nearby airports)
+- Trip ideas: Nager.Date holidays/long weekends x SerpApi Google Travel Explore from all airports near home, weather, budget
+- Choosing an idea creates the trip and starts flight, stay and itinerary searches
+- All airports within 150 km searched in one Google Flights search; transfer costs included in ranking
+- Book everything: flights, stays, hostels/Airbnb, car rental, transport, tickets, extras
+- Brevo mailer (free 300/day) so verification emails reach any inbox
+- 12 new tests (89 total)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0114hJxL3rKR8RLruZhDpZRX
+---
+ .env.example                         |   7 ++
+ .env.free.example                    |   7 +-
+ README.md                            |   6 +-
+ docs/DEPLOY_FREE.md                  |  21 +++-
+ docs/FEATURE_STATUS.md               |   9 +-
+ docs/FREE_SETUP.md                   |   2 +-
+ docs/TESTING.md                      |   2 +-
+ migrations/004_trip_ideas.sql        |  13 ++
+ public/styles.css                    |  25 ++++
+ render.yaml                          |   8 +-
+ src/server/app.ts                    |  25 +++-
+ src/server/config.ts                 |  11 +-
+ src/server/domain/windows.ts         | 119 ++++++++++++++++++
+ src/server/integrations/holidays.ts  |  33 +++++
+ src/server/integrations/index.ts     |   9 +-
+ src/server/integrations/messaging.ts |  46 ++++++-
+ src/server/integrations/serpapi.ts   |  39 ++++++
+ src/server/integrations/types.ts     |   6 +
+ src/server/jobs/worker.ts            |   3 +
+ src/server/services/auth.ts          |   3 +-
+ src/server/services/bookAll.ts       | 140 ++++++++++++++++++++++
+ src/server/services/ideas.ts         | 164 +++++++++++++++++++++++++
+ src/server/services/searches.ts      |  90 ++++++++++----
+ src/web/app.ts                       |  21 ++--
+ src/web/views/auth.ts                |   8 +-
+ src/web/views/book.ts                |  57 +++++++++
+ src/web/views/home.ts                |  83 +++++++++++++
+ src/web/views/ideas.ts               |  97 +++++++++++++++
+ src/web/views/profile.ts             |   8 +-
+ src/web/views/trip.ts                |   7 +-
+ src/web/views/trips.ts               |  14 ++-
+ test/integration/ideas-book.test.ts  | 172 +++++++++++++++++++++++++++
+ test/unit/adapters.test.ts           |   2 +-
+ test/unit/ideas.test.ts              | 111 +++++++++++++++++
+ 34 files changed, 1301 insertions(+), 67 deletions(-)
+ create mode 100644 migrations/004_trip_ideas.sql
+ create mode 100644 src/server/domain/windows.ts
+ create mode 100644 src/server/integrations/holidays.ts
+ create mode 100644 src/server/services/bookAll.ts
+ create mode 100644 src/server/services/ideas.ts
+ create mode 100644 src/web/views/book.ts
+ create mode 100644 src/web/views/home.ts
+ create mode 100644 src/web/views/ideas.ts
+ create mode 100644 test/integration/ideas-book.test.ts
+ create mode 100644 test/unit/ideas.test.ts
+
+diff --git a/.env.example b/.env.example
+index b2d8d88..6ddd242 100644
+--- a/.env.example
++++ b/.env.example
+@@ -17,6 +17,7 @@ RUN_WORKER_IN_PROCESS=true               # false when running `npm run start:wor
+ MIGRATE_ON_START=true
+ 
+ # --- Transactional email (verification, password reset) ---
++BREVO_API_KEY=                # Brevo transactional email (free 300/day); preferred over Resend when set
+ RESEND_API_KEY=
+ EMAIL_FROM="Travel Compass <no-reply@your-domain.example>"
+ 
+@@ -79,3 +80,9 @@ RETENTION_JOBS_DAYS=30
+ 
+ # --- Tests ---
+ TEST_DATABASE_URL=postgres://tc:devpass@127.0.0.1:5433/travel_compass_test
++
++# Trip ideas (free): public holidays from Nager.Date, prices from SerpApi Google Travel Explore.
++# HOLIDAYS_API_URL=https://date.nager.at/api/v3
++# IDEA_WINDOWS=3               # date windows priced per "Suggest trips" (1 SerpApi search each)
++# NEARBY_AIRPORT_KM=150        # also search sizeable airports this far from home
++# MAX_ORIGIN_AIRPORTS=6        # searched together in ONE Google Flights search
+diff --git a/.env.free.example b/.env.free.example
+index 55417ec..462e52f 100644
+--- a/.env.free.example
++++ b/.env.free.example
+@@ -10,10 +10,13 @@ ADMIN_EMAILS=you@example.com                 # the email you sign up with gets t
+ RUN_WORKER_IN_PROCESS=true
+ 
+ # Email: personal use without an email provider — links are printed in the server log (docker compose logs web).
+-# For real emails use Resend's free plan instead (3,000/month): set RESEND_API_KEY + EMAIL_FROM and EMAIL_LOG_ONLY=false.
++# Real emails, free: Brevo (300/day). Verify your own address as a sender in Brevo, then set
++# BREVO_API_KEY + EMAIL_FROM and EMAIL_LOG_ONLY=false. (Resend's onboarding@resend.dev only reaches YOUR Resend
++# account address; other people need a domain verified in Resend.)
+ EMAIL_LOG_ONLY=true
++BREVO_API_KEY=
+ RESEND_API_KEY=
+-EMAIL_FROM="Travel Compass <onboarding@resend.dev>"
++EMAIL_FROM="Travel Compass <you@gmail.com>"
+ 
+ # Flights + hotels: SerpApi free plan, 250 searches/month (Google Flights / Google Hotels results)
+ SERPAPI_API_KEY=                              # (2) https://serpapi.com/users/sign_up
+diff --git a/README.md b/README.md
+index 2367cba..ab3f4a2 100644
+--- a/README.md
++++ b/README.md
+@@ -48,6 +48,10 @@ Runtime dependencies: **none**. Dev dependencies: `typescript`, `esbuild`, `@typ
+ | `docker compose --profile local-ai up -d` | Also start a local Ollama server (free, private AI) |
+ | `docker compose exec ollama ollama pull qwen2.5:7b` | Download a local model for Ollama |
+ | `docker compose logs web \| grep verify-email` | Read your sign-up link when `EMAIL_LOG_ONLY=true` |
++| `node --test test/unit/ideas.test.ts` | Unit tests for holiday windows, trip-idea ranking, booking links and Brevo email |
++| `node --test test/integration/ideas-book.test.ts` | Dashboard → trip ideas → choose → multi-airport flights → Book everything (needs test DB) |
++| `curl "https://<your-url>/api/public/windows?country=BE&months=6"` | Check the public holiday/long-weekend data on a deployment |
++| `git am 0001-*.patch && git push` | Apply a patch file from Claude to your repo; Render redeploys on push |
+ | `cp .env.free.example .env` | Start from the zero-cost configuration |
+ | `git remote add origin https://github.com/<you>/travel-compass.git && git push -u origin main` | Put the code on GitHub for Render to deploy (Render → New → Blueprint reads `render.yaml`) |
+ | `curl https://<your-url>/api/ready` | Check a deployed instance and its database are up |
+@@ -67,7 +71,7 @@ npm start                            # http://localhost:3000
+ npm test
+ ```
+ 
+-Without provider credentials the app still runs: accounts, profiles, trips, autosave, reservations and the admin page work; live searches, plan generation and reminders respond with a clear "not available yet" message and **never** substitute placeholder data. In development, verification emails are printed to the log when `RESEND_API_KEY` is unset (never in production).
++Without provider credentials the app still runs: accounts, profiles, trips, autosave, reservations and the admin page work; live searches, plan generation and reminders respond with a clear "not available yet" message and **never** substitute placeholder data. In development, verification emails are printed to the log when no email key is set (never in production unless `EMAIL_LOG_ONLY=true`). For real emails set `BREVO_API_KEY` (free 300/day) — see docs/DEPLOY_FREE.md.
+ 
+ ## How it works
+ 
+diff --git a/docs/DEPLOY_FREE.md b/docs/DEPLOY_FREE.md
+index c797695..e327396 100644
+--- a/docs/DEPLOY_FREE.md
++++ b/docs/DEPLOY_FREE.md
+@@ -60,13 +60,32 @@ The health check doesn't touch the database. The worker sleeps until the next re
+ ## 6. First use
+ 
+ 1. Open your URL on your phone and sign up with your `ADMIN_EMAILS` address.
+-2. The verification link is in Render → your service → **Logs** (search `verify-email`), because `EMAIL_LOG_ONLY=true`.
++2. With `EMAIL_LOG_ONLY=true` no email is sent: the verification link is in Render → your service → **Logs** (search `verify-email`). To get real emails in your inbox, see **Real verification emails** below.
+ 3. Go to **Reminders → WhatsApp, free (CallMeBot)**:
+    1. Save **+34 684 78 37 08** in your contacts. That's the number CallMeBot publishes; check callmebot.com in case it changes.
+    2. In WhatsApp, send it `I allow callmebot to send me messages`.
+    3. Paste the API key it replies with, plus your number, into the app. Press **Send test code**, enter the code, then **Turn on reminders**.
+ 4. Plan a trip. The first search after a quiet period takes about a minute while Render and Neon wake up.
+ 
++## Real verification emails (free, Brevo)
++
++Emails don't arrive when `EMAIL_LOG_ONLY=true` (links only go to the log), or when Resend sends from `onboarding@resend.dev` (Resend only delivers that to the address you signed up to Resend with). Brevo's free plan sends 300 emails a day to anyone, from your own verified address, without a domain:
++
++1. Sign up at brevo.com (free, no card).
++2. **Senders, domains & dedicated IPs → Senders → Add a sender**: enter your own address (for example your Gmail) and confirm the email Brevo sends you.
++3. **SMTP & API → API keys → Generate a new API key**. Copy it.
++4. In Render → your service → **Environment**, set:
++   - `BREVO_API_KEY` = the key
++   - `EMAIL_FROM` = `Travel Compass <the-address-you-verified>`
++   - `EMAIL_LOG_ONLY` = `false`
++5. Save (Render redeploys). On the sign-in page use **Send a new link**; the email arrives within a minute. Check spam the first time — mail sent "from" a Gmail address through another service can be filtered. For best delivery, later verify your own domain in Brevo (SPF/DKIM).
++
++## Trip ideas and "Book everything"
++
++- The dashboard is public: anyone can pick a city and see upcoming long weekends (Nager.Date, free, no key) and the airports that will be compared.
++- **Suggest trips** (signed in): one SerpApi *Google Travel Explore* search per date window (default 3), from all airports within 150 km at once. Choosing an idea creates the trip and starts one Google Flights search (all nearby airports together, plus 2 return searches) and one Google Hotels search. A full idea → trip run costs about 7 of the 250 free monthly searches.
++- **Book everything** lists flights and stays with live prices, plus prefilled links for hostels, Airbnb, car rental (Kayak, sorted by price), trains/buses (Rome2Rio) and tickets your itinerary marks as needing a reservation. Car rental, hostel-site and Airbnb prices aren't loaded in the app: there's no free price feed for them.
++
+ ## WhatsApp: what's free and what isn't
+ 
+ - **CallMeBot** (used here): free for personal use, but it can only message your own number. It's an unofficial gateway, not Meta, and gives no delivery receipts, so reminders show as "sent", never "delivered".
+diff --git a/docs/FEATURE_STATUS.md b/docs/FEATURE_STATUS.md
+index 4442229..202ceb4 100644
+--- a/docs/FEATURE_STATUS.md
++++ b/docs/FEATURE_STATUS.md
+@@ -16,7 +16,8 @@ The admin page (`/admin`) shows the same information at runtime and marks an int
+ |---|---|
+ | Registration, verified email, login, logout, password recovery, session revocation on reset | Tested locally |
+ | Google sign-in (OIDC + PKCE) | Awaiting credentials (`GOOGLE_CLIENT_ID/SECRET`); token exchange not tested end-to-end |
+-| Transactional email (Resend) | Awaiting credentials |
++| Transactional email (Brevo free 300/day, or Resend) | Brevo request format tested with a simulated API; awaiting `BREVO_API_KEY` for a live send |
++| Public dashboard (no sign-in): city search, holiday windows, nearby airports | Tested locally |
+ | Profile: home city, airports, time zone, currency, diet, allergies, budget, pace, interests, hiking, room preference, wake/prep times | Tested locally |
+ | Server-enforced per-customer data separation | Tested locally (two-user test across trips, searches, offers, reservations, admin) |
+ | Account export (JSON) and deletion (with Gmail revocation and job cancellation) | Tested locally |
+@@ -44,7 +45,11 @@ The admin page (`/admin`) shows the same information at runtime and marks an int
+ | Replace venue, move activity, change pace, regenerate one day | Tested locally (move, pace, single-day regenerate); replace uses the same path |
+ | Autosave with conflict detection | Tested locally |
+ | Live traffic transfer times (Google Routes) | Awaiting credentials; falls back to labelled planning assumptions |
+-| Inter-city transport (trains/buses between stops) | **Not implemented** — shown as an explicit planning assumption |
++| Inter-city transport (trains/buses between stops) | No prices; prefilled Rome2Rio links in "Book everything" |
++| Trip ideas: holiday/long-weekend windows (Nager.Date) × cheapest destinations (SerpApi Google Travel Explore) × weather | Tested locally with simulated Nager/SerpApi responses; awaiting live check |
++| All airports within 150 km searched in ONE Google Flights search; transfer cost to each airport included in ranking | Tested locally with simulated SerpApi |
++| Choose an idea → trip created → flights, stays and itinerary searches start automatically | Tested locally |
++| "Book everything" checklist: flights, stays, hostels/Airbnb links, car rental links, transport, tickets, extras; booked items tracked | Tested locally. Car rental and Airbnb/hostel-site prices are **not** loaded (no free price API) — links only |
+ 
+ ## Bookings, Gmail, reminders
+ 
+diff --git a/docs/FREE_SETUP.md b/docs/FREE_SETUP.md
+index 35818ef..b40bc16 100644
+--- a/docs/FREE_SETUP.md
++++ b/docs/FREE_SETUP.md
+@@ -77,7 +77,7 @@ A typical trip (destination ideas, flights, flexible dates, hotels, booking) use
+   2. Leave the consent screen in **Testing**, add yourself as a test user, and enable the Gmail API.
+   3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. This also turns on "Continue with Google".
+   - Google expires refresh tokens for testing-mode apps after 7 days, so reconnect weekly. Publishing the app would require Google's paid security review.
+-- **Real emails:** use Resend's free plan (3,000/month, one domain). Verify a domain you own, set `RESEND_API_KEY` and `EMAIL_FROM`, and set `EMAIL_LOG_ONLY=false`.
++- **Real emails:** use Brevo's free plan (300/day). Verify your own address as a sender, set `BREVO_API_KEY` and `EMAIL_FROM`, and set `EMAIL_LOG_ONLY=false` (steps in DEPLOY_FREE.md). Resend also works, but only with a domain you own verified in Resend.
+ - **Use it from your phone:** free Tailscale or Cloudflare Tunnel. Set `APP_URL` to the tunnel's https address and add it to the Google OAuth redirect URIs.
+ - **Always on:** an old laptop or Raspberry Pi. Oracle Cloud's Always Free tier also works; since June 2026 the Arm VM allowance is 2 OCPU / 12 GB, it needs a card for identity checks, and capacity is often unavailable.
+ 
+diff --git a/docs/TESTING.md b/docs/TESTING.md
+index 65003ed..e0ecd1d 100644
+--- a/docs/TESTING.md
++++ b/docs/TESTING.md
+@@ -4,7 +4,7 @@ Run: `npm test` (needs PostgreSQL at `TEST_DATABASE_URL`; the integration suite
+ 
+ **All automated tests use mocked providers** (`test/helpers/mocks.ts`) or simulated provider HTTP responses. They prove the application logic, persistence, security rules and failure handling — not that any live provider works. Live verification is done per deployment with `npm run check:integrations` and the manual journey in ADMIN_CHECKLIST.md §11.
+ 
+-Last run (2026-11-04, Node 22.23, PostgreSQL 16): **77 tests, 77 passed, 0 failed** (re-run 2026-11-09).
++Last run (2026-11-11, Node 22.23, PostgreSQL 16): **89 tests, 89 passed, 0 failed**. New: `test/unit/ideas.test.ts` (holiday windows, idea ranking, Travel Explore parsing, booking links, Brevo) and `test/integration/ideas-book.test.ts` (public dashboard → ideas → choose → multi-airport flight search → Book everything).
+ 
+ | Suite | Covers |
+ |---|---|
+diff --git a/migrations/004_trip_ideas.sql b/migrations/004_trip_ideas.sql
+new file mode 100644
+index 0000000..eeffe47
+--- /dev/null
++++ b/migrations/004_trip_ideas.sql
+@@ -0,0 +1,13 @@
++-- Trip ideas: holiday-aware date windows + live destination prices from the traveller's nearby airports.
++CREATE TABLE trip_ideas (
++  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  user_id     uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++  status      text NOT NULL CHECK (status IN ('running','complete','partial','failed')),
++  params      jsonb NOT NULL DEFAULT '{}',
++  result      jsonb,
++  error       text,
++  chosen_trip_id uuid REFERENCES trips(id) ON DELETE SET NULL,
++  created_at  timestamptz NOT NULL DEFAULT now(),
++  finished_at timestamptz
++);
++CREATE INDEX trip_ideas_user ON trip_ideas(user_id, created_at DESC);
+diff --git a/public/styles.css b/public/styles.css
+index 5139e32..e5d0038 100644
+--- a/public/styles.css
++++ b/public/styles.css
+@@ -149,3 +149,28 @@ dialog.booking header { display: flex; justify-content: space-between; align-ite
+ .traveller { margin-top: .8rem; }
+ .manual { align-items: end; }
+ @media (max-width: 640px) { header.site { position: static; } }
++
++/* ---- dashboard, trip ideas, book everything ---- */
++.hero h1 { font-size: clamp(1.6rem, 4.5vw, 2.4rem); }
++.hero .actions, .idea-card .actions, .book-options .actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .8rem; }
++.window-grid, .idea-grid { list-style: none; padding: 0; margin: .6rem 0 1.2rem; display: grid; gap: .8rem; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
++.window-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: .9rem 1rem; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: .3rem; }
++.window-card h3 { font-size: 1.05rem; margin: 0; }
++.window-card .button, .window-card .chip { align-self: flex-start; margin-top: auto; }
++.eyebrow { color: var(--muted); font-size: .78rem; margin: 0; text-transform: uppercase; letter-spacing: .04em; }
++.idea-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; box-shadow: var(--shadow); display: flex; flex-direction: column; }
++.idea-card img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; background: var(--line); }
++.idea-body { padding: .9rem 1rem 1rem; display: flex; flex-direction: column; gap: .2rem; flex: 1; }
++.idea-body h3 { margin: .2rem 0; font-size: 1.15rem; }
++.price-line { margin: .2rem 0; font-size: 1.3rem; font-family: var(--mono); }
++.reasons, .caveats { margin: .3rem 0; padding-left: 1.1rem; }
++.reasons li::marker { content: "✓ "; color: var(--ok); }
++.caveats li { color: var(--warn); }
++.steps { padding-left: 1.2rem; } .steps li { margin: .35rem 0; }
++.book-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 1rem; }
++.book-item { border-top: 1px solid var(--line); padding-top: .9rem; }
++.book-item:first-child { border-top: 0; padding-top: 0; }
++.book-item h3 { font-size: 1.05rem; margin: 0; }
++.book-options { display: grid; gap: .7rem; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); margin: .6rem 0; }
++.links a { white-space: nowrap; }
++@media (max-width: 520px) { header.site nav { gap: .6rem; font-size: .92rem; } .window-grid, .idea-grid { grid-template-columns: 1fr; } }
+diff --git a/render.yaml b/render.yaml
+index ed49baf..1ae607d 100644
+--- a/render.yaml
++++ b/render.yaml
+@@ -23,11 +23,13 @@ services:
+         sync: false
+       - key: ADMIN_EMAILS                   # the email you will sign up with
+         sync: false
+-      - key: EMAIL_LOG_ONLY                 # true = read sign-up links in Render's Logs tab; false + RESEND_API_KEY for real emails
++      - key: EMAIL_LOG_ONLY                 # set "false" once BREVO_API_KEY is in; "true" only prints links to Render's Logs
+         value: "true"
+-      - key: RESEND_API_KEY
++      - key: BREVO_API_KEY                  # free 300 emails/day; sends real verification emails to any address
+         sync: false
+-      - key: EMAIL_FROM
++      - key: RESEND_API_KEY                 # alternative; needs your own verified domain to reach other people
++        sync: false
++      - key: EMAIL_FROM                     # e.g. Travel Compass <you@gmail.com> — must be a verified sender in Brevo
+         sync: false
+       - key: SERPAPI_API_KEY                # free: 250 searches/month
+         sync: false
+diff --git a/src/server/app.ts b/src/server/app.ts
+index f1f08a4..87f7663 100644
+--- a/src/server/app.ts
++++ b/src/server/app.ts
+@@ -16,6 +16,8 @@ import * as booking from './services/booking.ts';
+ import * as reservations from './services/reservations.ts';
+ import * as notifications from './services/notifications.ts';
+ import * as admin from './services/admin.ts';
++import * as ideas from './services/ideas.ts';
++import { bookingPlan } from './services/bookAll.ts';
+ 
+ const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../public');
+ const ITEM_KINDS = ['wake', 'breakfast', 'transfer', 'activity', 'hike', 'lunch', 'break', 'dinner', 'checkin', 'checkout', 'flight', 'travel'] as const;
+@@ -68,7 +70,7 @@ export function createApp(ctx: AppContext) {
+   r.post('/api/auth/register', async (c) => {
+     const b = v.object({ email: v.email(), password: v.string({ trim: false, max: 200 }), displayName: v.string({ min: 1, max: 80 }) }).parse(c.body);
+     await auth.register(ctx, b);
+-    return { ok: true, message: cfg.email.logOnly && !cfg.email.resendApiKey ? 'Account created. Email is in log-only mode: copy the verification link from the server log (docker compose logs web | grep verify-email).' : 'Check your inbox for a verification link.' };
++    return { ok: true, message: cfg.email.logOnly && !cfg.email.resendApiKey && !cfg.email.brevoApiKey ? 'Account created. Email is in log-only mode, so no email is sent: the verification link is in the server log (Render → Logs, search verify-email). Add BREVO_API_KEY to send real emails.' : 'Check your inbox for a verification link.' };
+   }, { auth: 'none', rate: 'auth' });
+   r.post('/api/auth/resend-verification', async (c) => { await auth.resendVerification(ctx, v.object({ email: v.email() }).parse(c.body).email); return { ok: true }; }, { auth: 'none', rate: 'auth' });
+   r.post('/api/auth/verify-email', async (c) => {
+@@ -122,7 +124,25 @@ export function createApp(ctx: AppContext) {
+     const q = (c.url.searchParams.get('q') ?? '').slice(0, 80);
+     const lat = Number(c.url.searchParams.get('lat')); const lng = Number(c.url.searchParams.get('lng'));
+     return profile.searchPlaces(ctx, q, Number.isFinite(lat) && Number.isFinite(lng) && c.url.searchParams.has('lat') ? { lat, lng } : undefined);
+-  }, { auth: 'user' });
++  }, { auth: 'none' }); // public: free place search, rate-limited per IP
++
++  // ---------- public dashboard data (no paid searches) ----------
++  r.get('/api/public/windows', async (c) => {
++    const country = v.string({ pattern: /^[A-Za-z]{2}$/ }).parse(c.url.searchParams.get('country') ?? '');
++    const months = Math.min(12, Math.max(1, Number(c.url.searchParams.get('months') ?? 6) || 6));
++    return ideas.windowsFor(ctx, country, months);
++  }, { auth: 'none' });
++
++  // ---------- trip ideas ----------
++  r.post('/api/ideas', async (c) => {
++    const b = v.object({ origin: placeSchema, country: v.optional(v.string({ pattern: /^[A-Za-z]{2}$/ })), months: v.optional(v.number({ int: true, min: 1, max: 12 })), adults: v.optional(v.number({ int: true, min: 1, max: 9 })),
++      budget: v.optional(v.nullable(v.number({ min: 0, max: 1_000_000 }))), currency: v.optional(v.string({ pattern: /^[A-Z]{3}$/ })), windowIds: v.optional(v.array(v.string({ pattern: /^\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}$/ }), { max: 3 })) }).parse(c.body);
++    const prof = await profile.getProfile(ctx, c.user!.id);
++    return { ideaId: await ideas.startIdeas(ctx, c.user!.id, { origin: b.origin, country: b.country, months: b.months ?? 6, adults: b.adults ?? 1, budget: b.budget ?? prof.budgetTotal ?? null, currency: b.currency ?? prof.currency ?? 'EUR', windowIds: b.windowIds }) };
++  }, { auth: 'user', rate: 'expensive' });
++  r.get('/api/ideas/latest', async (c) => ideas.latestIdeas(ctx, c.user!.id), { auth: 'user' });
++  r.get('/api/ideas/:id', async (c) => ideas.getIdeas(ctx, c.user!.id, v.uuid().parse(c.params.id)), { auth: 'user' });
++  r.post('/api/ideas/:id/choose', async (c) => ideas.chooseIdea(ctx, c.user!.id, v.uuid().parse(c.params.id), v.object({ index: v.number({ int: true, min: 0, max: 50 }) }).parse(c.body).index), { auth: 'user', rate: 'expensive' });
+ 
+   // ---------- trips ----------
+   r.get('/api/trips', async (c) => trips.listTrips(ctx, c.user!.id), { auth: 'user' });
+@@ -159,6 +179,7 @@ export function createApp(ctx: AppContext) {
+     if (!it.rows.length) throw new HttpError(404, 'not_found', 'Item not found');
+     return planning.requestPlan(ctx, c.user!.id, c.params.id, { date: it.rows[0].day_date, excludePlaceIds: it.rows[0].venue?.placeId ? [it.rows[0].venue.placeId] : [] });
+   }, { auth: 'user', rate: 'expensive' });
++  r.get('/api/trips/:id/book', async (c) => bookingPlan(ctx, c.user!.id, c.params.id), { auth: 'user' });
+   r.get('/api/trips/:id/notifications', async (c) => { await trips.getOwnedTrip(ctx, c.user!.id, c.params.id); return notifications.listNotifications(ctx, c.user!.id, c.params.id); }, { auth: 'user' });
+ 
+   // ---------- booking ----------
+diff --git a/src/server/config.ts b/src/server/config.ts
+index b00e5e4..1533aad 100644
+--- a/src/server/config.ts
++++ b/src/server/config.ts
+@@ -39,7 +39,7 @@ export function loadConfig() {
+     adminEmails: (str('ADMIN_EMAILS', '') ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+ 
+     google: { clientId: str('GOOGLE_CLIENT_ID'), clientSecret: str('GOOGLE_CLIENT_SECRET') },
+-    email: { resendApiKey: str('RESEND_API_KEY'), from: str('EMAIL_FROM', 'Travel Compass <no-reply@example.com>')!,
++    email: { resendApiKey: str('RESEND_API_KEY'), brevoApiKey: str('BREVO_API_KEY'), from: str('EMAIL_FROM', 'Travel Compass <no-reply@example.com>')!,
+       // Personal self-hosting only: print verification/reset links to the server log instead of emailing them.
+       logOnly: bool('EMAIL_LOG_ONLY', false) },
+     duffel: { token: str('DUFFEL_ACCESS_TOKEN'), staysEnabled: bool('DUFFEL_STAYS_ENABLED', false), linksEnabled: bool('DUFFEL_LINKS_ENABLED', false), webhookSecret: str('DUFFEL_WEBHOOK_SECRET') },
+@@ -57,6 +57,7 @@ export function loadConfig() {
+     userAgent: `TravelCompass/1.0 (+${appUrl})`,
+     // Free personal WhatsApp via CallMeBot (each user brings their own CallMeBot key for their own number).
+     callmebotEnabled: bool('CALLMEBOT_ENABLED', true),
++    holidaysUrl: str('HOLIDAYS_API_URL', 'https://date.nager.at/api/v3')!,
+     whatsapp: { token: str('WHATSAPP_ACCESS_TOKEN'), phoneNumberId: str('WHATSAPP_PHONE_NUMBER_ID'), appSecret: str('WHATSAPP_APP_SECRET'), verifyToken: str('WHATSAPP_WEBHOOK_VERIFY_TOKEN'), graphVersion: str('WHATSAPP_GRAPH_VERSION', 'v23.0')!,
+       templates: { verification: str('WHATSAPP_TEMPLATE_VERIFICATION', 'tc_verification_code')!, pretrip: str('WHATSAPP_TEMPLATE_PRETRIP', 'tc_pretrip_briefing')!, daily: str('WHATSAPP_TEMPLATE_DAILY', 'tc_daily_schedule')! }, templateLanguage: str('WHATSAPP_TEMPLATE_LANGUAGE', 'en')! },
+     limits: {
+@@ -64,6 +65,10 @@ export function loadConfig() {
+       flexMaxCombos: num('FLEX_MAX_COMBOS', freeFlights ? 9 : 49),
+       flexStayQuoteCombos: num('FLEX_STAY_QUOTE_COMBOS', freeFlights ? 2 : 6),
+       destinationCandidates: num('DESTINATION_CANDIDATES', freeFlights ? 4 : 8),
++      // Trip ideas: each priced date window is one Google Travel Explore search.
++      ideaWindows: num('IDEA_WINDOWS', 3),
++      nearbyAirportKm: num('NEARBY_AIRPORT_KM', 150),
++      maxOriginAirports: num('MAX_ORIGIN_AIRPORTS', 6),
+       providerConcurrency: num('PROVIDER_CONCURRENCY', 4),
+       apiRatePerMinute: num('API_RATE_PER_MINUTE', 120),
+       authRatePerMinute: num('AUTH_RATE_PER_MINUTE', 10),
+@@ -99,7 +104,7 @@ export function integrationReadiness(c: Config): IntegrationInfo[] {
+   return [
+     mk('database', 'PostgreSQL', 'Persistent storage for all customer data', true, [['DATABASE_URL', c.databaseUrl]]),
+     mk('encryption', 'Token encryption key', 'Encrypts OAuth tokens and traveller details at rest', true, [['TOKEN_ENCRYPTION_KEY', c.tokenEncryptionKey]]),
+-    mk('email', c.email.logOnly && !c.email.resendApiKey ? 'Email (log-only, personal use)' : 'Resend (transactional email)', 'Email verification and password recovery', true, [['RESEND_API_KEY or EMAIL_LOG_ONLY', c.email.resendApiKey || c.email.logOnly]], c.email.logOnly ? [] : ['Verified sending domain (SPF/DKIM)']),
++    mk('email', c.email.brevoApiKey ? 'Brevo (free 300 emails/day)' : c.email.resendApiKey ? 'Resend (transactional email)' : c.email.logOnly ? 'Email (log-only: links go to the server log, not your inbox)' : 'Email', 'Email verification and password recovery', true, [['BREVO_API_KEY or RESEND_API_KEY', c.email.brevoApiKey || c.email.resendApiKey || (c.email.logOnly ? 'log' : '')]], c.email.brevoApiKey ? ['Verified sender address in Brevo (Senders & IP)'] : c.email.resendApiKey ? ['Verified sending domain in Resend (onboarding@resend.dev only reaches your own address)'] : []),
+     mk('google_login', 'Google sign-in', 'Sign in with Google', false, [['GOOGLE_CLIENT_ID', c.google.clientId], ['GOOGLE_CLIENT_SECRET', c.google.clientSecret]], ['Google OAuth consent screen (testing mode is fine for personal use)']),
+     // Flights: Duffel (booking provider) or SerpApi Google Flights (free 250 searches/month)
+     mk('duffel_flights', 'Duffel Flights', 'Live bookable flight offers', !serp, [['DUFFEL_ACCESS_TOKEN', c.duffel.token]], ['Duffel live-mode account (KYC) for real bookings']),
+@@ -118,6 +123,8 @@ export function integrationReadiness(c: Config): IntegrationInfo[] {
+     mk('ai_compat', `OpenAI-compatible AI (${c.openai.baseUrl ? new URL(c.openai.baseUrl).hostname : 'Groq / Ollama'})`, 'Free AI planning via Groq free tier or a local Ollama model', !anthropic, [['AI_BASE_URL', c.openai.baseUrl], ['AI_MODEL', c.openai.model]]),
+     // Research: Brave (paid credits) or Wikivoyage/Wikipedia (free)
+     mk('research', 'Brave Search API', 'Open-web sources for hikes, dishes, closures', false, [['BRAVE_SEARCH_API_KEY', c.research.braveApiKey]], ['Brave Search plan (card required)']),
++    mk('holidays', 'Nager.Date public holidays (free)', 'Long weekends and holiday weeks for trip ideas', false, []),
++    mk('travel_explore', 'SerpApi — Google Travel Explore (uses the same 250/month)', 'Cheapest destinations from your nearby airports for each holiday window', false, [['SERPAPI_API_KEY', c.serpapi.apiKey]]),
+     mk('wikimedia', 'Wikivoyage + Wikipedia', 'Free sources for local dishes, sights and trails (CC BY-SA)', !brave, []),
+     mk('gmail', 'Gmail API (customer OAuth)', 'Reservation import from customer inboxes', false, [['GOOGLE_CLIENT_ID', c.google.clientId], ['GOOGLE_CLIENT_SECRET', c.google.clientSecret]], ['For your own inbox: keep the OAuth app in testing and add yourself as a test user. Public use needs Google restricted-scope verification + CASA']),
+     mk('callmebot', 'WhatsApp via CallMeBot (free, personal)', 'Reminders to your own WhatsApp number; each user activates their own key; no delivery receipts', false, [['CALLMEBOT_ENABLED', c.callmebotEnabled]], ['Personal use only (CallMeBot terms); unofficial gateway, not Meta']),
+diff --git a/src/server/domain/windows.ts b/src/server/domain/windows.ts
+new file mode 100644
+index 0000000..0d5c4c4
+--- /dev/null
++++ b/src/server/domain/windows.ts
+@@ -0,0 +1,119 @@
++// Travel windows: when is it cheapest in leave days to go away? Built from the traveller's country's public
++// holidays and long weekends (Nager.Date), with plain weekends as a fallback.
++import { addDays, dateRange, daysBetween } from './time.ts';
++
++export interface HolidayLike { date: string; name: string; global?: boolean }
++export interface LongWeekendLike { startDate: string; endDate: string; dayCount: number; needBridgeDay: boolean }
++
++export interface TravelWindow {
++  id: string;            // `${start}_${end}`
++  start: string;         // departure date
++  end: string;           // return date
++  nights: number;
++  kind: 'long_weekend' | 'holiday_week' | 'weekend';
++  label: string;         // e.g. "Christmas Day long weekend"
++  holidays: string[];    // holiday names inside the window
++  leaveDays: number;     // weekdays off work needed (not weekends, not public holidays)
++  needsBridgeDay: boolean;
++}
++
++const weekday = (d: string) => new Date(`${d}T12:00:00Z`).getUTCDay(); // 0 Sun … 6 Sat
++
++export function leaveDaysNeeded(start: string, end: string, holidayDates: Set<string>): number {
++  return dateRange(start, end).filter((d) => { const w = weekday(d); return w !== 0 && w !== 6 && !holidayDates.has(d); }).length;
++}
++
++function mk(start: string, end: string, kind: TravelWindow['kind'], hol: HolidayLike[], holidayDates: Set<string>, needsBridgeDay: boolean): TravelWindow {
++  const names = [...new Set(hol.filter((h) => h.date >= start && h.date <= end).map((h) => h.name))];
++  const nights = daysBetween(start, end);
++  const label = names.length ? `${names.join(' & ')} ${kind === 'holiday_week' ? 'week' : 'long weekend'}` : kind === 'weekend' ? 'Weekend getaway' : 'Long weekend';
++  return { id: `${start}_${end}`, start, end, nights, kind, label, holidays: names, leaveDays: leaveDaysNeeded(start, end, holidayDates), needsBridgeDay };
++}
++
++/**
++ * Candidate trip windows between `from` and `until`, best first by date.
++ * - every long weekend (3+ days off, possibly with one bridge day);
++ * - a "holiday week" around each weekday public holiday (Sat → following/preceding Sun, 8 nights max) for longer trips;
++ * - plain Fri→Sun weekends when there are fewer than `minCount` holiday windows.
++ */
++export function travelWindows(o: { from: string; until: string; holidays: HolidayLike[]; longWeekends: LongWeekendLike[]; minCount?: number; includeWeeks?: boolean }): TravelWindow[] {
++  const nationwide = o.holidays.filter((h) => h.global !== false);
++  const holidayDates = new Set(nationwide.map((h) => h.date));
++  const out = new Map<string, TravelWindow>();
++  const inRange = (s: string, e: string) => s >= o.from && e <= o.until && e > s;
++  for (const lw of o.longWeekends) {
++    if (!inRange(lw.startDate, lw.endDate)) continue;
++    const w = mk(lw.startDate, lw.endDate, 'long_weekend', nationwide, holidayDates, lw.needBridgeDay);
++    out.set(w.id, w);
++  }
++  if (o.includeWeeks !== false) {
++    for (const h of nationwide) {
++      const wd = weekday(h.date);
++      if (wd === 0 || wd === 6) continue;
++      // Saturday before → Sunday after: a full week away using the holiday to save one leave day.
++      const start = addDays(h.date, -((wd + 1) % 7)); const end = addDays(start, 8);
++      if (!inRange(start, end)) continue;
++      const w = mk(start, end, 'holiday_week', nationwide, holidayDates, false);
++      if (!out.has(w.id)) out.set(w.id, w);
++    }
++  }
++  const list = [...out.values()];
++  if (list.length < (o.minCount ?? 4)) {
++    // Fallback: the next few Friday → Sunday weekends (Friday evening departure assumed).
++    let d = o.from;
++    while (weekday(d) !== 5) d = addDays(d, 1);
++    for (let i = 0; i < 6 && list.length < (o.minCount ?? 4) + 2; i++, d = addDays(d, 7)) {
++      const end = addDays(d, 2);
++      if (!inRange(d, end) || out.has(`${d}_${end}`)) continue;
++      const w = mk(d, end, 'weekend', nationwide, holidayDates, false);
++      w.leaveDays = 0; // evening departure after work
++      list.push(w);
++    }
++  }
++  return list.sort((a, b) => a.start.localeCompare(b.start) || a.nights - b.nights);
++}
++
++/** Picks the windows to price: prefer few leave days per night away, spread over different dates. */
++export function pickWindowsToPrice(windows: TravelWindow[], max: number): TravelWindow[] {
++  const ranked = [...windows].sort((a, b) => (a.leaveDays / Math.max(1, a.nights)) - (b.leaveDays / Math.max(1, b.nights)) || a.start.localeCompare(b.start));
++  const chosen: TravelWindow[] = [];
++  for (const w of ranked) {
++    if (chosen.length >= max) break;
++    if (chosen.some((c) => !(w.end <= c.start || w.start >= c.end))) continue; // no overlapping windows
++    chosen.push(w);
++  }
++  return chosen.sort((a, b) => a.start.localeCompare(b.start));
++}
++
++export interface IdeaCandidate {
++  windowId: string;
++  name: string; country: string; iata: string;
++  flightPrice: number | null; hotelPerNight: number | null; nights: number;
++  flightMinutes: number | null; stops: number | null;
++  weather?: { tempMaxC: number | null; precipitationProbability: number | null; kind: 'forecast' | 'climate' } | null;
++}
++
++export interface ScoredIdea<T extends IdeaCandidate = IdeaCandidate> { idea: T; total: number | null; totalIsEstimate: boolean; withinBudget: boolean | null; score: number; reasons: string[]; caveats: string[] }
++
++/** Ranks destination ideas by estimated total cost (flight + nights × hotel from-price), travel time, stops and weather. */
++export function scoreIdeas<T extends IdeaCandidate>(ideas: T[], budget: number | null, currency: string): ScoredIdea<T>[] {
++  return ideas.filter((i) => i.flightPrice !== null).map((i) => {
++    const hotel = i.hotelPerNight !== null ? i.hotelPerNight * i.nights : null;
++    const total = i.flightPrice! + (hotel ?? 0);
++    const reasons: string[] = []; const caveats: string[] = [];
++    let score = total;
++    if (i.flightMinutes !== null) { score += (i.flightMinutes / 60) * 12; if (i.flightMinutes <= 150) reasons.push(`Short flight (${Math.round(i.flightMinutes / 60 * 10) / 10} h)`); }
++    if (i.stops === 0) reasons.push('Direct flight available'); else if ((i.stops ?? 0) > 0) { score += 40 * i.stops!; caveats.push(`${i.stops} stop${i.stops! > 1 ? 's' : ''} on the cheapest flight`); }
++    if (hotel === null) caveats.push('No hotel price shown — total covers the flight only');
++    const w = i.weather;
++    if (w?.tempMaxC !== null && w?.tempMaxC !== undefined) {
++      if (w.tempMaxC >= 18 && w.tempMaxC <= 30) { score -= 25; reasons.push(`Pleasant ${w.kind === 'forecast' ? 'forecast' : 'typical weather'} (~${Math.round(w.tempMaxC)}°C)`); }
++      else if (w.tempMaxC < 8) { score += 20; caveats.push(`Cold (${w.kind === 'forecast' ? 'forecast' : 'typically'} ~${Math.round(w.tempMaxC)}°C)`); }
++    }
++    if ((w?.precipitationProbability ?? 0) >= 60) { score += 15; caveats.push(`Rain likely (${Math.round(w!.precipitationProbability!)}%)`); }
++    const withinBudget = budget === null ? null : total <= budget;
++    if (withinBudget === true) reasons.push(`Fits your ${currency} ${budget} budget (estimate)`);
++    if (withinBudget === false) { score += 1000; caveats.push(`Over your ${currency} ${budget} budget (estimate ${currency} ${Math.round(total)})`); }
++    return { idea: i, total: Math.round(total), totalIsEstimate: true, withinBudget, score, reasons, caveats };
++  }).sort((a, b) => a.score - b.score);
++}
+diff --git a/src/server/integrations/holidays.ts b/src/server/integrations/holidays.ts
+new file mode 100644
+index 0000000..5a58ef2
+--- /dev/null
++++ b/src/server/integrations/holidays.ts
+@@ -0,0 +1,33 @@
++// Public holidays and long weekends from Nager.Date (free, no key, ~120 countries).
++import { requestJson } from './http.ts';
++
++export interface PublicHoliday { date: string; name: string; localName: string; countryCode: string; global: boolean; types?: string[] }
++export interface LongWeekend { startDate: string; endDate: string; dayCount: number; needBridgeDay: boolean; bridgeDays?: string[] }
++
++export class NagerHolidays {
++  name = 'nager_date';
++  private base: string;
++  private cache = new Map<string, { at: number; value: Promise<unknown> }>();
++  constructor(baseUrl = 'https://date.nager.at/api/v3') { this.base = baseUrl.replace(/\/$/, ''); }
++  configured() { return true; }
++
++  private cached<T>(key: string, load: () => Promise<T>): Promise<T> {
++    const hit = this.cache.get(key);
++    if (hit && Date.now() - hit.at < 12 * 3600_000) return hit.value as Promise<T>;
++    const value = load();
++    this.cache.set(key, { at: Date.now(), value });
++    value.catch(() => this.cache.delete(key));
++    return value;
++  }
++
++  publicHolidays(year: number, country: string): Promise<PublicHoliday[]> {
++    const cc = country.toUpperCase();
++    // Nager returns 404 (empty body) for unsupported countries; treat that as "no holiday data".
++    return this.cached(`ph:${year}:${cc}`, () => (requestJson<PublicHoliday[] | null>(`${this.base}/PublicHolidays/${year}/${cc}`, { provider: 'nager_date', operation: 'holidays', timeoutMs: 10000, retries: 1 }).catch((e) => { if (e?.status === 404 || e?.status === 204) return []; throw e; })).then((x) => (Array.isArray(x) ? x : [])));
++  }
++
++  longWeekends(year: number, country: string): Promise<LongWeekend[]> {
++    const cc = country.toUpperCase();
++    return this.cached(`lw:${year}:${cc}`, () => (requestJson<LongWeekend[] | null>(`${this.base}/LongWeekend/${year}/${cc}`, { provider: 'nager_date', operation: 'long_weekends', timeoutMs: 10000, retries: 1 }).catch((e) => { if (e?.status === 404 || e?.status === 204) return []; throw e; })).then((x) => (Array.isArray(x) ? x : [])));
++  }
++}
+diff --git a/src/server/integrations/index.ts b/src/server/integrations/index.ts
+index 170492c..0a34fe3 100644
+--- a/src/server/integrations/index.ts
++++ b/src/server/integrations/index.ts
+@@ -4,13 +4,14 @@ import { BookingDemand } from './booking.ts';
+ import { DuffelFlights, DuffelLinks, DuffelStays } from './duffel.ts';
+ import { configureOpenMeteoTz, FreeGeo } from './freegeo.ts';
+ import { GooglePlaces, GoogleRoutes } from './google.ts';
+-import { ResendMailer, WhatsAppCloud } from './messaging.ts';
++import { chooseMailer, WhatsAppCloud } from './messaging.ts';
+ import { OpenAiCompatAi } from './openaiCompat.ts';
+ import { OsmPlaces } from './osm.ts';
+ import { BraveResearch } from './research.ts';
+-import { SerpApiFlights, SerpApiHotels, type QuotaGuard } from './serpapi.ts';
++import { SerpApiExplore, SerpApiFlights, SerpApiHotels, type QuotaGuard } from './serpapi.ts';
+ import { TelegramBot } from './telegram.ts';
+ import { CallMeBot } from './callmebot.ts';
++import { NagerHolidays } from './holidays.ts';
+ import type { Providers } from './types.ts';
+ import { OpenMeteo } from './weather.ts';
+ import { WikimediaResearch } from './wikimedia.ts';
+@@ -35,8 +36,10 @@ export function buildProviders(c: Config, budget: BudgetCheck, quota: QuotaGuard
+       : new OpenAiCompatAi({ baseUrl: c.openai.baseUrl, apiKey: c.openai.apiKey, model: c.openai.model, budget, price: aiPrice }),
+     research: c.research.braveApiKey ? new BraveResearch(c.research.braveApiKey) : new WikimediaResearch(c.userAgent),
+     messenger: new WhatsAppCloud(c.whatsapp.token, c.whatsapp.phoneNumberId, c.whatsapp.appSecret, c.whatsapp.graphVersion),
+-    mailer: new ResendMailer(c.email.resendApiKey, c.email.from, !c.isProd || c.email.logOnly),
++    mailer: chooseMailer({ brevoKey: c.email.brevoApiKey, resendKey: c.email.resendApiKey, from: c.email.from, devLog: !c.isProd || c.email.logOnly }),
+     telegram: new TelegramBot(c.telegram.token, c.telegram.username, c.telegram.webhookSecret),
+     callmebot: new CallMeBot(c.callmebotEnabled),
++    holidays: new NagerHolidays(c.holidaysUrl),
++    explore: new SerpApiExplore(c.serpapi.apiKey, quota, c.serpapi.gl),
+   };
+ }
+diff --git a/src/server/integrations/messaging.ts b/src/server/integrations/messaging.ts
+index adee073..9f70e1b 100644
+--- a/src/server/integrations/messaging.ts
++++ b/src/server/integrations/messaging.ts
+@@ -50,16 +50,56 @@ export function parseWhatsAppInbound(payload: any): { from: string; text: string
+   return out;
+ }
+ 
++/** Splits "Name <addr@x>" into parts. */
++export function parseFrom(from: string): { name?: string; email: string } {
++  const m = /^\s*(.*?)\s*<([^>]+)>\s*$/.exec(from);
++  return m ? { name: m[1].replace(/^"|"$/g, '') || undefined, email: m[2].trim() } : { email: from.trim() };
++}
++
++/** Wraps a plain-text email with one call-to-action link into simple, mobile-friendly HTML. */
++export function emailHtml(text: string): string {
++  const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
++  const url = /(https?:\/\/\S+)/.exec(text)?.[1];
++  const body = esc(text).replace(/(https?:\/\/\S+)/g, '<a href="$1">$1</a>').replace(/\n/g, '<br>');
++  const button = url ? `<p style="margin:24px 0"><a href="${esc(url)}" style="background:#0f766e;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:600">Open link</a></p>` : '';
++  return `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;font-size:15px;line-height:1.5;color:#1f2933;max-width:520px">${button}<p>${body}</p></div>`;
++}
++
++type Mail = { to: string; subject: string; text: string; html?: string };
++
++/** Brevo transactional email (free plan: 300 emails/day). Works with a single verified sender address, no domain needed. */
++export class BrevoMailer implements Mailer {
++  name = 'brevo';
++  private key?: string; private from: string;
++  constructor(key: string | undefined, from: string) { this.key = key; this.from = from; }
++  configured() { return !!this.key; }
++  async send(m: Mail) {
++    if (!this.key) throw new NotConfiguredError('Brevo', ['BREVO_API_KEY']);
++    const sender = parseFrom(this.from);
++    await requestJson('https://api.brevo.com/v3/smtp/email', {
++      provider: 'brevo', operation: 'smtp.email', method: 'POST', retries: 1, headers: { 'api-key': this.key, accept: 'application/json' },
++      body: { sender, to: [{ email: m.to }], subject: m.subject, textContent: m.text, htmlContent: m.html ?? emailHtml(m.text) },
++    });
++  }
++}
++
+ export class ResendMailer implements Mailer {
+   name = 'resend';
+   private key?: string; private from: string; private devLog: boolean;
+   constructor(key: string | undefined, from: string, devLog: boolean) { this.key = key; this.from = from; this.devLog = devLog; }
+   configured() { return !!this.key || this.devLog; }
+-  async send(m: { to: string; subject: string; text: string; html?: string }) {
++  async send(m: Mail) {
+     if (!this.key) {
+-      if (this.devLog) { log.info('DEV EMAIL (not sent; RESEND_API_KEY missing)', { subject: m.subject, body: m.text }); return; }
++      if (this.devLog) { log.info('DEV EMAIL (not sent; no email provider key)', { to: m.to, subject: m.subject, body: m.text }); return; }
+       throw new NotConfiguredError('Resend', ['RESEND_API_KEY']);
+     }
+-    await requestJson('https://api.resend.com/emails', { provider: 'resend', operation: 'emails.send', method: 'POST', headers: { Authorization: `Bearer ${this.key}` }, body: { from: this.from, to: [m.to], subject: m.subject, text: m.text, html: m.html } });
++    if (/@resend\.dev>?\s*$/i.test(this.from)) log.warn('EMAIL_FROM uses resend.dev: Resend only delivers this to your own Resend account address. Verify a domain or use Brevo.', {});
++    await requestJson('https://api.resend.com/emails', { provider: 'resend', operation: 'emails.send', method: 'POST', headers: { Authorization: `Bearer ${this.key}` }, body: { from: this.from, to: [m.to], subject: m.subject, text: m.text, html: m.html ?? emailHtml(m.text) } });
+   }
+ }
++
++/** Picks the configured email provider: Brevo, then Resend, then log-only. */
++export function chooseMailer(o: { brevoKey?: string; resendKey?: string; from: string; devLog: boolean }): Mailer {
++  if (o.brevoKey) return new BrevoMailer(o.brevoKey, o.from);
++  return new ResendMailer(o.resendKey, o.from, o.devLog);
++}
+diff --git a/src/server/integrations/serpapi.ts b/src/server/integrations/serpapi.ts
+index 749887c..81d2eb6 100644
+--- a/src/server/integrations/serpapi.ts
++++ b/src/server/integrations/serpapi.ts
+@@ -54,7 +54,11 @@ export class SerpApiFlights implements FlightProvider {
+   private key?: string; private geo: FreeGeo; private quota: QuotaGuard; private gl: string;
+   constructor(key: string | undefined, geo: FreeGeo, quota: QuotaGuard, gl = 'be') { this.key = key; this.geo = geo; this.quota = quota; this.gl = gl; }
+   configured() { return !!this.key; }
++  /** Google Flights accepts several departure/arrival airports in one search (comma-separated), so one search covers all nearby airports. */
++  multiAirport = true;
+   searchPlaces(query: string, near?: { lat: number; lng: number; radiusM: number }) { return this.geo.searchPlaces(query, near); }
++  async nearbyAirports(lat: number, lng: number, radiusKm: number, max: number) { return (await this.geo.nearbyAirports(lat, lng, radiusKm, max)).map((a) => ({ iata: a.iata, name: a.name, lat: a.lat, lng: a.lng })); }
++  async airportInfo(iata: string) { const a = await this.geo.airport(iata); return a ? { iata: a.iata, name: a.name, lat: a.lat, lng: a.lng, city: a.city, country: a.country } : null; }
+ 
+   private async call(params: Record<string, string>, op: string, userId?: string | null): Promise<any> {
+     if (!this.key) throw new NotConfiguredError('SerpApi', ['SERPAPI_API_KEY']);
+@@ -229,3 +233,38 @@ export function normaliseSerpHotels(r: any, req: Pick<StaySearchRequest, 'lat' |
+   }
+   return out;
+ }
++
++export interface ExploreDestination {
++  name: string; country: string; iata: string | null; lat: number | null; lng: number | null;
++  flightPrice: number | null; hotelPerNight: number | null; startDate: string | null; endDate: string | null;
++  flightMinutes: number | null; stops: number | null; airline: string | null; thumbnail: string | null; link: string | null;
++}
++
++/** Google Travel Explore via SerpApi: cheapest destinations from one or more departure airports for given dates (one search). */
++export class SerpApiExplore {
++  name = 'serpapi_google_travel_explore';
++  private key?: string; private quota: QuotaGuard; private gl: string;
++  constructor(key: string | undefined, quota: QuotaGuard, gl = 'be') { this.key = key; this.quota = quota; this.gl = gl; }
++  configured() { return !!this.key; }
++  async explore(req: { departureIds: string[]; outboundDate: string; returnDate: string; currency: string; adults: number; userId?: string | null; maxPrice?: number | null }): Promise<{ destinations: ExploreDestination[]; searchUrl: string | null }> {
++    if (!this.key) throw new NotConfiguredError('SerpApi', ['SERPAPI_API_KEY']);
++    await this.quota('serpapi');
++    const qs = new URLSearchParams({ engine: 'google_travel_explore', departure_id: req.departureIds.join(','), outbound_date: req.outboundDate, return_date: req.returnDate, type: '1', currency: req.currency, adults: String(req.adults), hl: 'en', gl: this.gl, api_key: this.key });
++    if (req.maxPrice) qs.set('max_price', String(Math.round(req.maxPrice)));
++    const r = await requestJson<any>(`${BASE}?${qs}`, { provider: 'serpapi', operation: 'travel_explore', timeoutMs: 60000, retries: 1, userId: req.userId });
++    if (r.error && !/hasn't returned any results/i.test(r.error)) throw new ProviderError('serpapi', String(r.error).slice(0, 200), 200, false);
++    return { destinations: normaliseExplore(r), searchUrl: typeof r.search_metadata?.google_travel_explore_url === 'string' ? r.search_metadata.google_travel_explore_url : null };
++  }
++}
++
++export function normaliseExplore(r: any): ExploreDestination[] {
++  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
++  const https = (v: unknown) => (typeof v === 'string' && v.startsWith('https://') ? v : null);
++  return (r.destinations ?? []).filter((d: any) => d?.name).map((d: any) => ({
++    name: String(d.name), country: String(d.country ?? ''), iata: /^[A-Z]{3}$/.test(d.destination_airport?.code ?? '') ? d.destination_airport.code : null,
++    lat: num(d.gps_coordinates?.latitude), lng: num(d.gps_coordinates?.longitude),
++    flightPrice: num(d.flight_price), hotelPerNight: num(d.hotel_price), startDate: d.start_date ?? null, endDate: d.end_date ?? null,
++    flightMinutes: num(d.flight_duration), stops: num(d.number_of_stops), airline: d.airline ? String(d.airline) : null,
++    thumbnail: https(d.thumbnail), link: https(d.link),
++  }));
++}
+diff --git a/src/server/integrations/types.ts b/src/server/integrations/types.ts
+index 2e5ab8d..d3ba9c5 100644
+--- a/src/server/integrations/types.ts
++++ b/src/server/integrations/types.ts
+@@ -21,6 +21,10 @@ export interface FlightProvider {
+   getOffer(offerId: string, currency: string): Promise<FlightOffer | null>;
+   /** Provider-specific booking handoff (used when the provider is not the checkout provider). */
+   handoff?(offer: FlightOffer): Promise<Handoff>;
++  /** True when one search can take several comma-separated departure airports. */
++  multiAirport?: boolean;
++  nearbyAirports?(lat: number, lng: number, radiusKm: number, max: number): Promise<{ iata: string; name: string; lat: number; lng: number }[]>;
++  airportInfo?(iata: string): Promise<{ iata: string; name: string; lat: number; lng: number; city: string; country: string } | null>;
+ }
+ 
+ export interface StaySearchRequest {
+@@ -145,4 +149,6 @@ export interface Providers {
+   mailer: Mailer;
+   telegram?: ChatMessenger;
+   callmebot?: { configured(): boolean; send(phone: string, apiKey: string, text: string, userId?: string | null): Promise<{ messageId: string }> };
++  holidays?: { configured(): boolean; publicHolidays(year: number, country: string): Promise<{ date: string; name: string; localName: string; countryCode: string; global: boolean }[]>; longWeekends(year: number, country: string): Promise<{ startDate: string; endDate: string; dayCount: number; needBridgeDay: boolean }[]> };
++  explore?: { configured(): boolean; explore(req: { departureIds: string[]; outboundDate: string; returnDate: string; currency: string; adults: number; userId?: string | null; maxPrice?: number | null }): Promise<{ destinations: import('./serpapi.ts').ExploreDestination[]; searchUrl: string | null }> };
+ }
+diff --git a/src/server/jobs/worker.ts b/src/server/jobs/worker.ts
+index 325bce6..249d38a 100644
+--- a/src/server/jobs/worker.ts
++++ b/src/server/jobs/worker.ts
+@@ -8,6 +8,7 @@ import { HttpError } from '../http/core.ts';
+ import { nextDueAt, type Job } from './queue.ts';
+ import { failSearch, runDestinationSearch, runFlexSearch, runFlightSearch, runStaySearch } from '../services/searches.ts';
+ import { runPlanJob } from '../services/planning.ts';
++import { failIdeas, runIdeas } from '../services/ideas.ts';
+ import { pollTelegram, sendNotificationJob, scheduleTripNotifications } from '../services/notifications.ts';
+ import { gmailSyncJob } from '../services/reservations.ts';
+ 
+@@ -18,6 +19,7 @@ export const handlers: Record<string, JobHandler> = {
+   'search.stay': (c, p) => runStaySearch(c, p.searchId, p.userId, p.tripId),
+   'search.flex': (c, p) => runFlexSearch(c, p.searchId, p.userId, p.tripId),
+   'search.destinations': (c, p) => runDestinationSearch(c, p.searchId, p.userId, p.tripId),
++  'ideas.run': (c, p) => runIdeas(c, p.ideaId, p.userId),
+   'plan.generate': (c, p) => runPlanJob(c, p),
+   'notify.send': (c, p) => sendNotificationJob(c, p),
+   'notify.reschedule': (c, p) => scheduleTripNotifications(c, p.userId, p.tripId),
+@@ -48,6 +50,7 @@ export async function processJob(ctx: AppContext, job: Job) {
+ async function onDead(ctx: AppContext, job: Job, e: Error) {
+   const p = job.payload ?? {};
+   if (job.queue.startsWith('search.') && p.searchId) await failSearch(ctx, p.searchId, e);
++  if (job.queue === 'ideas.run' && p.ideaId) await failIdeas(ctx, p.ideaId, e);
+   if (job.queue === 'plan.generate' && p.tripId) {
+     await ctx.db.query(`UPDATE trips SET plan_status=CASE WHEN EXISTS (SELECT 1 FROM itinerary_days WHERE trip_id=$1) THEN 'incomplete' ELSE 'failed' END,
+       plan_message=$2 WHERE id=$1 AND plan_status='generating'`, [p.tripId, e instanceof NotConfiguredError ? 'Live planning is not available yet. Your saved trip is unchanged.' : e instanceof AiBudgetExceeded ? 'Daily planning limit reached. Your saved trip is unchanged; try again tomorrow.' : 'Planning services did not respond. Your saved trip is unchanged — please retry.']);
+diff --git a/src/server/services/auth.ts b/src/server/services/auth.ts
+index f86b5b8..c5400da 100644
+--- a/src/server/services/auth.ts
++++ b/src/server/services/auth.ts
+@@ -23,7 +23,7 @@ async function issueEmailToken(ctx: AppContext, userId: string, purpose: 'verify
+ 
+ export async function register(ctx: AppContext, i: { email: string; password: string; displayName: string }) {
+   // Never create accounts that cannot be verified.
+-  if (ctx.cfg.isProd && !ctx.providers.mailer.configured()) throw new NotConfiguredError('Email', ['RESEND_API_KEY']);
++  if (ctx.cfg.isProd && !ctx.providers.mailer.configured()) throw new NotConfiguredError('Email', ['BREVO_API_KEY or RESEND_API_KEY']);
+   passwordPolicy(i.password);
+   const hash = await hashPassword(i.password);
+   const existing = await ctx.db.query<{ id: string }>('SELECT id FROM users WHERE lower(email)=lower($1)', [i.email]);
+@@ -166,6 +166,7 @@ export async function exportAccount(ctx: AppContext, userId: string) {
+     user: (await one('SELECT id, email, display_name, role, email_verified_at, created_at FROM users WHERE id=$1'))[0],
+     profile: (await one('SELECT * FROM profiles WHERE user_id=$1'))[0],
+     trips: await one('SELECT * FROM trips WHERE user_id=$1 ORDER BY created_at'),
++    tripIdeas: await one('SELECT id, status, params, result, created_at FROM trip_ideas WHERE user_id=$1 ORDER BY created_at'),
+     stops: await one('SELECT s.* FROM trip_stops s JOIN trips t ON t.id=s.trip_id WHERE t.user_id=$1'),
+     itineraryDays: await one('SELECT d.* FROM itinerary_days d JOIN trips t ON t.id=d.trip_id WHERE t.user_id=$1'),
+     itineraryItems: await one('SELECT i.* FROM itinerary_items i JOIN itinerary_days d ON d.id=i.day_id JOIN trips t ON t.id=d.trip_id WHERE t.user_id=$1'),
+diff --git a/src/server/services/bookAll.ts b/src/server/services/bookAll.ts
+new file mode 100644
+index 0000000..1c83972
+--- /dev/null
++++ b/src/server/services/bookAll.ts
+@@ -0,0 +1,140 @@
++// "Book everything": one checklist per trip covering every thing that needs booking, with the best and cheapest
++// live options we have (flights, stays) and prefilled comparison links where no free price feed exists
++// (car rental, hostels and holiday rentals, ground transport, tickets). Nothing is booked or paid here.
++import type { AppContext } from '../context.ts';
++import { addDays, daysBetween, haversineKm } from '../domain/time.ts';
++import type { Place } from '../../shared/types.ts';
++import { getOwnedTrip, getStops, type Stop } from './trips.ts';
++import { getProfile } from './profile.ts';
++
++export interface BookLink { label: string; url: string }
++export interface BookOption { role: string; title: string; price: { amount: number; currency: string } | null; detail: string; offerId?: string; link?: string | null; offer?: { id: string; kind: string; provider: string; data: unknown; total: { amount: number; currency: string }; quotedAt: string; role: string | null; selected: boolean } }
++export interface BookItem {
++  key: string; section: 'flights' | 'stays' | 'transport' | 'car' | 'activities' | 'extras';
++  title: string; subtitle: string;
++  status: 'booked' | 'chosen' | 'to_book' | 'search_needed' | 'optional';
++  options: BookOption[]; links: BookLink[]; note: string;
++}
++
++const q = (o: Record<string, string>) => new URLSearchParams(o).toString();
++const cityOf = (p: Place) => (p.cityName ?? p.name).replace(/\s*\([A-Z]{3}\)$/, '');
++const offerOf = (o: any) => ({ id: o.id, kind: o.kind, provider: o.provider, data: o.data, total: { amount: Number(o.total_amount), currency: o.currency }, quotedAt: o.quoted_at, role: o.role, selected: o.selected });
++const iataOf = (p: Place | null | undefined) => (p ? (p.kind === 'airport' ? p.iata : p.airports?.[0]?.iata ?? p.iata) ?? null : null);
++
++export function flightLinks(from: string, to: string, out: string, back: string, adults: number, fromCity?: string): BookLink[] {
++  const yymmdd = (d: string) => d.slice(2).replace(/-/g, '');
++  return [
++    { label: 'Google Flights', url: `https://www.google.com/travel/flights?${q({ q: `Flights from ${fromCity ?? from} to ${to} on ${out} through ${back}${adults > 1 ? ` for ${adults} adults` : ''}` })}` },
++    { label: 'Skyscanner', url: `https://www.skyscanner.net/transport/flights/${from.toLowerCase()}/${to.toLowerCase()}/${yymmdd(out)}/${yymmdd(back)}/?${q({ adultsv2: String(adults) })}` },
++    { label: 'Kayak', url: `https://www.kayak.com/flights/${from}-${to}/${out}/${back}${adults > 1 ? `/${adults}adults` : ''}?sort=price_a` },
++  ];
++}
++
++export function stayLinks(city: string, checkIn: string, checkOut: string, adults: number): BookLink[] {
++  const base = { ss: city, checkin: checkIn, checkout: checkOut, group_adults: String(adults), no_rooms: '1', group_children: '0' };
++  return [
++    { label: 'Hostels (Booking.com)', url: `https://www.booking.com/searchresults.html?${q({ ...base, nflt: 'ht_id=203' })}` },
++    { label: 'Cheapest hotels (Booking.com)', url: `https://www.booking.com/searchresults.html?${q({ ...base, order: 'price' })}` },
++    { label: 'Airbnb', url: `https://www.airbnb.com/s/${encodeURIComponent(city)}/homes?${q({ checkin: checkIn, checkout: checkOut, adults: String(adults) })}` },
++    { label: 'Google Hotels: hostels', url: `https://www.google.com/travel/search?${q({ q: `hostels in ${city}` })}` },
++  ];
++}
++
++export function carLinks(iata: string | null, city: string, pickUp: string, dropOff: string): BookLink[] {
++  const where = iata ?? city;
++  return [
++    { label: 'Kayak car rental', url: `https://www.kayak.com/cars/${encodeURIComponent(where)}/${pickUp}/${dropOff}?sort=price_a` },
++    { label: 'Google: car rental', url: `https://www.google.com/search?${q({ q: `cheap car rental ${iata ? `${iata} airport` : city} ${pickUp} to ${dropOff}` })}` },
++  ];
++}
++
++export function transportLink(from: string, to: string): BookLink {
++  return { label: 'Rome2Rio (trains, buses, ferries)', url: `https://www.rome2rio.com/map/${encodeURIComponent(from)}/${encodeURIComponent(to)}` };
++}
++
++export async function bookingPlan(ctx: AppContext, userId: string, tripId: string) {
++  const trip = await getOwnedTrip(ctx, userId, tripId);
++  const stops = await getStops(ctx.db, tripId);
++  const profile = await getProfile(ctx, userId);
++  const offers = (await ctx.db.query<any>(`SELECT id, kind, stop_id, provider, data, total_amount, currency, role, explanation, selected, quoted_at FROM offers WHERE trip_id=$1 AND (role IS NOT NULL OR selected) ORDER BY quoted_at DESC`, [tripId])).rows;
++  const reservations = (await ctx.db.query<any>(`SELECT kind, provider_name, confirmation_code, start_at, details FROM reservations WHERE trip_id=$1 AND user_id=$2`, [tripId, userId])).rows;
++  const items: BookItem[] = [];
++  const booked = (kind: string) => reservations.filter((r) => r.kind === kind);
++  const fromIata = iataOf(trip.origin);
++  const firstStop = stops[0]; const lastStop = stops[stops.length - 1];
++
++  // ---- flights
++  if (trip.startDate && trip.endDate && firstStop) {
++    const to = iataOf(firstStop.place); const back = iataOf(lastStop.place);
++    const fl = offers.filter((o) => o.kind === 'flight');
++    const chosen = fl.find((o) => o.selected);
++    const opts: BookOption[] = ['recommended', 'cheapest', 'convenient'].map((role) => fl.find((o) => o.role === role)).filter(Boolean).map((o: any) => {
++      const off = o.data.offer;
++      const desc = off.slices.map((s: any) => `${s.from}→${s.to} ${s.segments[0].departLocal.slice(5, 16).replace('T', ' ')} · ${s.segments.length - 1 ? `${s.segments.length - 1} stop` : 'direct'}`).join(' / ');
++      return { role: o.role, title: off.owner, price: { amount: Number(o.total_amount), currency: o.currency }, detail: `${desc}. ${o.explanation}`.trim(), offerId: o.id, offer: offerOf(o) };
++    });
++    const b = booked('flight');
++    items.push({ key: 'flights', section: 'flights', title: `Flights ${trip.origin?.cityName ?? trip.origin?.name ?? ''} ⇄ ${cityOf(firstStop.place)}`, subtitle: `${trip.startDate} → ${trip.endDate} · ${trip.adults} traveller${trip.adults > 1 ? 's' : ''}`,
++      status: b.length ? 'booked' : chosen ? 'chosen' : opts.length ? 'to_book' : 'search_needed', options: opts,
++      links: fromIata && to ? flightLinks(fromIata, to, trip.startDate, trip.endDate, trip.adults, trip.origin?.kind === 'city' ? trip.origin.name : undefined) : [],
++      note: b.length ? `Booked: ${b.map((r) => `${r.provider_name} ${r.confirmation_code ?? ''}`.trim()).join(', ')}` : opts.length ? 'Recommended balances price, time and transfers to your airport; cheapest is the lowest fare we found from all airports near you. Book with "Book" on the Flights tab or compare on the sites below.' : 'Run the flight search (Flights tab) to load live prices from every airport near you.' });
++    if (back && back !== to && stops.length > 1) items[items.length - 1].note += ' Open-jaw: you return from a different city.';
++  }
++
++  // ---- stays, ground transport and car per stop
++  const items2 = await Promise.all(stops.map(async (s, i) => {
++    const out: BookItem[] = [];
++    const city = cityOf(s.place); const nights = daysBetween(s.arriveDate, s.departDate);
++    if (nights > 0) {
++      const st = offers.filter((o) => o.kind === 'stay' && o.stop_id === s.id);
++      const chosen = st.find((o) => o.selected);
++      const opts: BookOption[] = ['recommended', 'cheapest', 'comfortable'].map((role) => st.find((o) => o.role === role)).filter(Boolean).map((o: any) => {
++        const x = o.data.stay;
++        return { role: o.role, title: x.propertyName, price: { amount: Number(o.total_amount), currency: o.currency }, detail: `${x.roomType}${x.reviewScore ? ` · ${x.reviewScore}/10` : ''} · ${x.cancellation?.summary ?? ''}. ${o.explanation}`.trim(), offerId: o.id, link: x.link ?? null, offer: offerOf(o) };
++      });
++      const b = booked('stay').filter((r) => !r.start_at || String(new Date(r.start_at).toISOString()).slice(0, 10) <= s.departDate);
++      out.push({ key: `stay:${s.id}`, section: 'stays', title: `Stay in ${city}`, subtitle: `${s.arriveDate} → ${s.departDate} · ${nights} night${nights > 1 ? 's' : ''}`,
++        status: b.length ? 'booked' : chosen ? 'chosen' : opts.length ? 'to_book' : 'search_needed', options: opts, links: stayLinks(city, s.arriveDate, s.departDate, trip.adults),
++        note: opts.length ? `Live prices from Google Hotels${profile.accommodationPref === 'dorm' ? '; you prefer dorms, so also check the hostel links' : ''}. Hostel and Airbnb links open those sites with your dates — prices are not loaded here (no free feed).` : 'Run the stay search (Stays tab) for live hotel prices, or compare hostels and rentals with the links below.' });
++    }
++    // Getting from the arrival airport into the city (first stop) and between stops.
++    const ap = s.place.airports?.[0];
++    if (i === 0 && ap) out.push({ key: `transfer:${s.id}`, section: 'transport', title: `Airport ${ap.iata} → ${city}`, subtitle: `${s.arriveDate} · ${Math.round(haversineKm(s.place, ap))} km`, status: booked('transport').length ? 'booked' : 'optional', options: [], links: [transportLink(ap.name, city)], note: 'Usually no need to pre-book; check if a train or bus needs a ticket in advance.' });
++    const next = stops[i + 1];
++    if (next) out.push({ key: `move:${s.id}`, section: 'transport', title: `${city} → ${cityOf(next.place)}`, subtitle: s.departDate, status: booked('transport').length ? 'booked' : 'to_book', options: [], links: [transportLink(city, cityOf(next.place)), ...(iataOf(s.place) && iataOf(next.place) ? flightLinks(iataOf(s.place)!, iataOf(next.place)!, s.departDate, s.departDate, trip.adults).slice(0, 1) : [])], note: 'Travel between destinations is not included in the flight search.' });
++    // Car rental: recommended when planned hikes or sights are far from the city centre.
++    const far = (await ctx.db.query<any>(`SELECT i.title, i.venue FROM itinerary_items i JOIN itinerary_days d ON d.id=i.day_id WHERE d.trip_id=$1 AND d.stop_id=$2 AND i.kind IN ('hike','activity') AND i.venue IS NOT NULL`, [tripId, s.id])).rows
++      .filter((r) => typeof r.venue?.lat === 'number' && haversineKm(s.place, r.venue) > 15);
++    const pick = s.arriveDate; const drop = s.departDate > s.arriveDate ? s.departDate : addDays(s.arriveDate, 1);
++    out.push({ key: `car:${s.id}`, section: 'car', title: `Car rental in ${city}`, subtitle: `${pick} → ${drop}`, status: far.length ? 'to_book' : 'optional', options: [],
++      links: carLinks(ap?.iata ?? null, city, pick, drop),
++      note: far.length ? `Recommended: ${far.slice(0, 3).map((r) => r.title).join(', ')} ${far.length > 1 ? 'are' : 'is'} more than 15 km from ${city}. Links open sorted by price; live car prices are not loaded here (no free price source).` : 'Optional: your plan stays near the city, where public transport is usually cheaper. Links open car-rental comparisons sorted by price; live car prices are not loaded here (no free price source).' });
++    return out;
++  }));
++  items.push(...items2.flat());
++
++  // ---- activities that need tickets or reservations
++  const acts = (await ctx.db.query<any>(`SELECT i.id, i.title, i.start_local, i.booking_required, i.venue, i.meta FROM itinerary_items i JOIN itinerary_days d ON d.id=i.day_id WHERE d.trip_id=$1 AND i.booking_required IN ('yes','recommended') ORDER BY i.start_local`, [tripId])).rows;
++  for (const a of acts.slice(0, 15)) {
++    const done = booked('activity').some((r) => r.provider_name && a.title.toLowerCase().includes(String(r.provider_name).toLowerCase()));
++    items.push({ key: `act:${a.id}`, section: 'activities', title: a.title, subtitle: `${a.start_local.slice(0, 10)} ${a.start_local.slice(11, 16)}`, status: done ? 'booked' : a.booking_required === 'yes' ? 'to_book' : 'optional', options: [],
++      links: [a.venue?.website ? { label: 'Official website', url: a.venue.website } : null, a.venue?.mapsUrl ? { label: 'Map', url: a.venue.mapsUrl } : null].filter(Boolean) as BookLink[],
++      note: a.booking_required === 'yes' ? 'Reservation or timed ticket required — book on the official site.' : 'Booking recommended (busy or limited capacity).' });
++  }
++  if (!acts.length) items.push({ key: 'act:none', section: 'activities', title: 'Tickets & reservations', subtitle: trip.planStatus === 'complete' ? 'Nothing in your plan needs a reservation' : 'Shown once your itinerary is generated', status: 'optional', options: [], links: [], note: 'Items in your itinerary marked "booking required" appear here.' });
++
++  // ---- extras (no links: these depend on the traveller's own documents and cover)
++  items.push({ key: 'extra:insurance', section: 'extras', title: 'Travel insurance', subtitle: 'Check what your bank card or existing policy already covers', status: 'optional', options: [], links: [], note: 'Cancellation cover is worth considering for non-refundable fares.' });
++  items.push({ key: 'extra:documents', section: 'extras', title: 'Passport, visa & entry rules', subtitle: stops.map((s) => s.place.countryCode).filter(Boolean).join(', '), status: 'optional', options: [], links: [], note: "Check entry requirements on your government's official travel advice site before booking." });
++  items.push({ key: 'extra:data', section: 'extras', title: 'Mobile data abroad', subtitle: 'Roaming or a local/eSIM plan', status: 'optional', options: [], links: [], note: 'Check your current plan\'s roaming rules for these countries.' });
++
++  const priced = items.flatMap((i) => i.status === 'booked' ? [] : [i.options.find((o) => o.role === 'recommended') ?? i.options[0]].filter(Boolean)) as BookOption[];
++  const cheapest = items.flatMap((i) => i.status === 'booked' ? [] : [i.options.find((o) => o.role === 'cheapest') ?? i.options[0]].filter(Boolean)) as BookOption[];
++  const sum = (xs: BookOption[]) => xs.filter((o) => o.price && o.price.currency === trip.currency).reduce((s, o) => s + o.price!.amount, 0);
++  return {
++    trip: { id: trip.id, title: trip.title, currency: trip.currency, budgetTotal: trip.budgetTotal },
++    items,
++    totals: { recommended: Math.round(sum(priced)), cheapest: Math.round(sum(cheapest)), currency: trip.currency, note: 'Flights + stays with live prices only; car rental, transport and tickets are extra.' },
++    counts: { toBook: items.filter((i) => i.status === 'to_book' || i.status === 'search_needed').length, booked: items.filter((i) => i.status === 'booked').length },
++  };
++}
+diff --git a/src/server/services/ideas.ts b/src/server/services/ideas.ts
+new file mode 100644
+index 0000000..1386476
+--- /dev/null
++++ b/src/server/services/ideas.ts
+@@ -0,0 +1,164 @@
++// Trip ideas: "when and where should I go?"
++// 1. Date windows from the traveller's public holidays and long weekends (Nager.Date, free).
++// 2. For the best few windows, one Google Travel Explore search each from ALL airports near home (SerpApi):
++//    cheapest destinations with a round-trip flight price and a hotel from-price.
++// 3. Weather for the strongest candidates (Open-Meteo), then ranking by estimated total cost, travel time and weather.
++// Choosing an idea creates a trip and immediately starts the flight, stay and itinerary searches.
++import type { AppContext } from '../context.ts';
++import { recordError } from '../context.ts';
++import { HttpError } from '../http/core.ts';
++import { addDays, daysBetween } from '../domain/time.ts';
++import { pickWindowsToPrice, scoreIdeas, travelWindows, type IdeaCandidate, type TravelWindow } from '../domain/windows.ts';
++import { mapLimit, NotConfiguredError, QuotaExceededError } from '../integrations/http.ts';
++import type { Place } from '../../shared/types.ts';
++import { getProfile } from './profile.ts';
++import { originAirports } from './searches.ts';
++import * as trips from './trips.ts';
++import * as searches from './searches.ts';
++import * as planning from './planning.ts';
++
++export interface IdeaParams { origin: Place; country: string; months: number; adults: number; budget: number | null; currency: string; windowIds?: string[] }
++
++/** Holiday-aware travel windows for a country (public: costs no paid searches). */
++export async function windowsFor(ctx: AppContext, country: string, months: number) {
++  const today = ctx.now().toISOString().slice(0, 10);
++  const from = addDays(today, 3); const until = addDays(today, Math.round(months * 30.5));
++  const years = [...new Set([Number(from.slice(0, 4)), Number(until.slice(0, 4))])];
++  const h = ctx.providers.holidays;
++  const holidays = h ? (await Promise.all(years.map((y) => h.publicHolidays(y, country).catch(() => [])))).flat() : [];
++  const longWeekends = h ? (await Promise.all(years.map((y) => h.longWeekends(y, country).catch(() => [])))).flat() : [];
++  const windows = travelWindows({ from, until, holidays, longWeekends, minCount: 4 });
++  return {
++    country: country.toUpperCase(), windows,
++    upcomingHolidays: holidays.filter((x) => x.global !== false && x.date >= today && x.date <= until).map((x) => ({ date: x.date, name: x.name, localName: x.localName })),
++    source: holidays.length ? { name: 'Nager.Date public holidays', url: `https://date.nager.at/PublicHoliday/Country/${country.toUpperCase()}` } : null,
++    note: holidays.length ? 'Leave days count weekdays that are not public holidays. Regional holidays are not included.' : 'No public-holiday data for this country, so plain weekends are shown.',
++  };
++}
++
++export async function startIdeas(ctx: AppContext, userId: string, p: Omit<IdeaParams, 'country'> & { country?: string }) {
++  if (!ctx.providers.explore?.configured()) throw new NotConfiguredError('Trip ideas with live prices', ['SERPAPI_API_KEY']);
++  const country = (p.country ?? p.origin.countryCode ?? '').toUpperCase();
++  if (!/^[A-Z]{2}$/.test(country)) throw new HttpError(400, 'invalid_input', 'Choose a home city so we know which public holidays apply.');
++  const params: IdeaParams = { ...p, country };
++  const r = await ctx.db.query<{ id: string }>(`INSERT INTO trip_ideas(user_id, status, params) VALUES ($1,'running',$2) RETURNING id`, [userId, params]);
++  await ctx.jobs.enqueue('ideas.run', { ideaId: r.rows[0].id, userId }, { maxAttempts: 2, dedupeKey: `ideas:${r.rows[0].id}` });
++  return r.rows[0].id;
++}
++
++export async function getIdeas(ctx: AppContext, userId: string, id: string) {
++  const r = await ctx.db.query<any>('SELECT * FROM trip_ideas WHERE id=$1 AND user_id=$2', [id, userId]);
++  if (!r.rows.length) throw new HttpError(404, 'not_found', 'Trip ideas not found');
++  const x = r.rows[0];
++  return { id: x.id, status: x.status, params: x.params, result: x.result, error: x.error, chosenTripId: x.chosen_trip_id, createdAt: x.created_at, finishedAt: x.finished_at };
++}
++
++export async function latestIdeas(ctx: AppContext, userId: string) {
++  const r = await ctx.db.query<any>(`SELECT id FROM trip_ideas WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`, [userId]);
++  return r.rows.length ? getIdeas(ctx, userId, r.rows[0].id) : null;
++}
++
++async function finish(ctx: AppContext, id: string, status: 'complete' | 'partial' | 'failed', result: unknown, error: string | null) {
++  await ctx.db.query('UPDATE trip_ideas SET status=$2, result=$3, error=$4, finished_at=now() WHERE id=$1', [id, status, result ?? null, error]);
++}
++
++export async function failIdeas(ctx: AppContext, id: string, e: Error) {
++  await finish(ctx, id, 'failed', null, e instanceof QuotaExceededError ? e.message : e instanceof NotConfiguredError ? 'Live trip ideas are not available yet (SERPAPI_API_KEY missing).' : 'A travel data service did not respond. Please retry.');
++}
++
++interface Candidate extends IdeaCandidate { lat: number | null; lng: number | null; thumbnail: string | null; link: string | null; airline: string | null; window: TravelWindow }
++
++export async function runIdeas(ctx: AppContext, id: string, userId: string) {
++  const row = await getIdeas(ctx, userId, id);
++  const p = row.params as IdeaParams;
++  const profile = await getProfile(ctx, userId);
++  const airports = await originAirports(ctx, { origin: p.origin }, { departureAirports: profile.departureAirports, homePlace: p.origin });
++  if (!airports.length) return finish(ctx, id, 'failed', null, 'No airport was found near your home city. Choose a bigger city or add a departure airport in your profile.');
++  const { windows, source, note } = await windowsFor(ctx, p.country, p.months);
++  const chosenWindows = p.windowIds?.length ? windows.filter((w) => p.windowIds!.includes(w.id)).slice(0, ctx.cfg.limits.ideaWindows) : pickWindowsToPrice(windows, ctx.cfg.limits.ideaWindows);
++  if (!chosenWindows.length) return finish(ctx, id, 'failed', { windows }, 'No suitable dates were found in that period.');
++
++  const explore = ctx.providers.explore!;
++  const priced = await mapLimit(chosenWindows, 2, (w) => explore.explore({ departureIds: airports.map((a) => a.iata), outboundDate: w.start, returnDate: w.end, currency: p.currency, adults: p.adults, userId }));
++  const cands: Candidate[] = []; const failedWindows: string[] = []; let lastErr: Error | null = null;
++  priced.forEach((r, i) => {
++    const w = chosenWindows[i];
++    if (!r.ok) { failedWindows.push(w.label); lastErr = r.error; return; }
++    for (const d of r.value.destinations) {
++      if (!d.iata || airports.some((a) => a.iata === d.iata)) continue;
++      cands.push({ windowId: w.id, window: w, name: d.name, country: d.country, iata: d.iata, flightPrice: d.flightPrice !== null ? d.flightPrice : null, hotelPerNight: d.hotelPerNight, nights: w.nights,
++        flightMinutes: d.flightMinutes, stops: d.stops, lat: d.lat, lng: d.lng, thumbnail: d.thumbnail, link: d.link, airline: d.airline, weather: null });
++    }
++  });
++  if (!cands.length) {
++    if (lastErr) throw lastErr;
++    return finish(ctx, id, 'failed', { windows, airports }, 'No destinations with prices were returned for these dates.');
++  }
++  // Weather for the cheapest few per window (free; forecast within ~15 days, otherwise historical climate).
++  const pre = scoreIdeas(cands, p.budget, p.currency);
++  const top = pre.slice(0, 24).map((s) => s.idea as Candidate);
++  if (ctx.providers.weather.configured()) {
++    await mapLimit(top.filter((c) => c.lat !== null && c.lng !== null).slice(0, 12), 3, async (c) => {
++      const dates = [c.window.start, addDays(c.window.start, Math.floor(c.nights / 2)), c.window.end];
++      const w = await ctx.providers.weather.forDates(c.lat!, c.lng!, dates, 'auto').catch(() => ({} as Record<string, any>));
++      const vals = Object.values(w) as any[];
++      if (!vals.length) return;
++      const avg = (k: string) => { const xs = vals.map((x) => x[k]).filter((x) => typeof x === 'number'); return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null; };
++      c.weather = { kind: vals.every((x) => x.kind === 'forecast') ? 'forecast' : 'climate', tempMaxC: avg('tempMaxC'), precipitationProbability: avg('precipitationProbability') };
++    });
++  }
++  const ranked = scoreIdeas(top, p.budget, p.currency);
++  // Keep variety: at most 3 ideas per window and one entry per destination per window.
++  const perWindow = new Map<string, number>(); const seen = new Set<string>(); const ideas: any[] = [];
++  for (const s of ranked) {
++    const c = s.idea as Candidate; const key = `${c.windowId}:${c.iata}`;
++    if (seen.has(key) || (perWindow.get(c.windowId) ?? 0) >= 4) continue;
++    seen.add(key); perWindow.set(c.windowId, (perWindow.get(c.windowId) ?? 0) + 1);
++    ideas.push({
++      index: ideas.length, window: c.window, destination: { name: c.name, country: c.country, iata: c.iata, lat: c.lat, lng: c.lng, thumbnail: c.thumbnail },
++      flight: { price: c.flightPrice, minutes: c.flightMinutes, stops: c.stops, airline: c.airline }, hotelPerNight: c.hotelPerNight, nights: c.nights,
++      total: s.total, withinBudget: s.withinBudget, weather: c.weather, reasons: s.reasons, caveats: s.caveats, link: c.link,
++    });
++    if (ideas.length >= 12) break;
++  }
++  const notes = [
++    `Prices are Google Travel Explore from-prices for ${p.adults} adult${p.adults > 1 ? 's' : ''} at search time, from any of ${airports.map((a) => a.iata).join(', ')}. Hotel prices are per night; the total is an estimate (flight + nights × hotel). When you choose an idea we fetch exact flights and stays.`,
++    note,
++  ];
++  if (failedWindows.length) notes.push(`Prices could not be retrieved for: ${failedWindows.join(', ')}.`);
++  await finish(ctx, id, failedWindows.length ? 'partial' : 'complete', { airports, windows, pricedWindows: chosenWindows.map((w) => w.id), ideas, notes, holidaySource: source }, null);
++}
++
++/** Creates a trip from an idea and starts the live flight, accommodation and itinerary searches. */
++export async function chooseIdea(ctx: AppContext, userId: string, id: string, index: number) {
++  const row = await getIdeas(ctx, userId, id);
++  const idea = row.result?.ideas?.find((x: any) => x.index === index);
++  if (!idea) throw new HttpError(404, 'not_found', 'That trip idea is no longer available. Search again.');
++  const p = row.params as IdeaParams;
++  const iata: string = idea.destination.iata;
++  // Resolve the destination to a city with its airports (falls back to the airport itself).
++  const places = await ctx.providers.flights.searchPlaces(idea.destination.name).catch(() => [] as Place[]);
++  let place = places.find((x) => x.kind === 'city' && x.airports?.some((a) => a.iata === iata))
++    ?? places.find((x) => x.kind === 'city' && x.countryCode && idea.destination.country && x.lat && idea.destination.lat !== null && Math.abs(x.lat - idea.destination.lat) < 0.6 && Math.abs(x.lng - idea.destination.lng) < 0.6);
++  if (!place) place = (await ctx.providers.flights.searchPlaces(iata).catch(() => [] as Place[])).find((x) => x.iata === iata);
++  if (!place) throw new HttpError(502, 'provider_error', 'The destination could not be matched to an airport. Try another idea.');
++  if (!place.airports?.some((a) => a.iata === iata)) {
++    const ap = await ctx.providers.flights.airportInfo?.(iata).catch(() => null);
++    if (ap) place = { ...place, iata, airports: [{ iata, name: ap.name, lat: ap.lat, lng: ap.lng }, ...(place.airports ?? [])] };
++  } else {
++    const aps = place.airports ?? [];
++    place = { ...place, iata, airports: [...aps.filter((a) => a.iata === iata), ...aps.filter((a) => a.iata !== iata)] };
++  }
++  const w: TravelWindow = idea.window;
++  const trip = await trips.createTrip(ctx, userId, {
++    title: `${idea.destination.name} · ${w.label}`.slice(0, 120), origin: p.origin, adults: p.adults, startDate: w.start, endDate: w.end,
++    flexDays: 0, budgetTotal: p.budget, currency: p.currency, stops: [{ place, arriveDate: w.start, departDate: w.end }],
++  });
++  await ctx.db.query('UPDATE trip_ideas SET chosen_trip_id=$2 WHERE id=$1', [id, trip.id]);
++  const started: string[] = [];
++  for (const kind of ['flight', 'stay'] as const) {
++    try { await searches.startSearch(ctx, userId, trip.id, kind); started.push(kind); } catch (e) { await recordError(ctx, 'ideas.choose', e as Error, { kind }); }
++  }
++  try { await planning.requestPlan(ctx, userId, trip.id); started.push('plan'); } catch (e) { await recordError(ctx, 'ideas.choose', e as Error, { kind: 'plan' }); }
++  return { tripId: trip.id, started, nights: daysBetween(w.start, w.end) };
++}
+diff --git a/src/server/services/searches.ts b/src/server/services/searches.ts
+index 753737f..0dfdf25 100644
+--- a/src/server/services/searches.ts
++++ b/src/server/services/searches.ts
+@@ -61,13 +61,39 @@ function airportOf(p: Place | null | undefined): string | null {
+   return p.airports?.[0]?.iata ?? p.iata ?? null;
+ }
+ 
+-function originAirports(trip: Trip, profile: Profile): string[] {
+-  const list = new Set<string>();
++export interface OriginAirport { iata: string; name: string; lat: number | null; lng: number | null; km: number | null }
++
++/**
++ * Departure airports to search: the chosen origin (and its airports), the traveller's saved departure airports and,
++ * when the flight source can search several airports at once, every other sizeable airport within NEARBY_AIRPORT_KM
++ * of home. The ranking then adds the cost and time of getting to each airport, so a cheaper fare from a farther
++ * airport only wins when it is cheaper overall.
++ */
++export async function originAirports(ctx: AppContext, trip: Pick<Trip, 'origin'>, profile: Pick<Profile, 'departureAirports' | 'homePlace'>): Promise<OriginAirport[]> {
++  const fl = ctx.providers.flights;
++  const max = fl.multiAirport ? ctx.cfg.limits.maxOriginAirports : 3;
++  const home = trip.origin ?? profile.homePlace ?? null;
++  const list = new Map<string, OriginAirport>();
++  const add = (iata: string, name: string, lat: number | null, lng: number | null) => {
++    if (!iata || list.has(iata)) return;
++    list.set(iata, { iata, name, lat, lng, km: home && lat !== null && lng !== null ? Math.round(haversineKm(home, { lat, lng })) : null });
++  };
+   const o = airportOf(trip.origin);
+-  if (o) list.add(o);
+-  if (trip.origin?.kind === 'city') for (const a of trip.origin.airports ?? []) list.add(a.iata);
+-  for (const a of profile.departureAirports ?? []) list.add(a.iata);
+-  return [...list].slice(0, 3);
++  if (o) { const c = airportCoords(trip.origin, o); add(o, trip.origin!.kind === 'airport' ? trip.origin!.name : trip.origin!.airports?.find((a) => a.iata === o)?.name ?? o, c?.lat ?? null, c?.lng ?? null); }
++  if (trip.origin?.kind === 'city') for (const a of trip.origin.airports ?? []) add(a.iata, a.name, a.lat, a.lng);
++  for (const a of profile.departureAirports ?? []) {
++    const info = fl.airportInfo ? await fl.airportInfo(a.iata).catch(() => null) : null;
++    add(a.iata, a.name, info?.lat ?? null, info?.lng ?? null);
++  }
++  if (fl.multiAirport && fl.nearbyAirports && home && trip.origin?.kind !== 'airport') {
++    for (const a of await fl.nearbyAirports(home.lat, home.lng, ctx.cfg.limits.nearbyAirportKm, max + 2).catch(() => [])) add(a.iata, a.name, a.lat, a.lng);
++  }
++  return [...list.values()].slice(0, max);
++}
++
++/** Comma-joined origin when the provider can search several airports at once; otherwise the closest airport. */
++function originParam(ctx: AppContext, airports: OriginAirport[]): string | undefined {
++  return ctx.providers.flights.multiAirport ? airports.map((a) => a.iata).join(',') : airports[0]?.iata;
+ }
+ 
+ function airportCoords(p: Place | null | undefined, iata: string) {
+@@ -77,20 +103,20 @@ function airportCoords(p: Place | null | undefined, iata: string) {
+   return p.kind === 'airport' && p.iata === iata ? { lat: p.lat, lng: p.lng } : null;
+ }
+ 
+-async function rankContext(ctx: AppContext, trip: Trip, stops: Stop[], profile: Profile, airports: string[]): Promise<{ rc: FlightRankContext; notes: string[] }> {
++async function rankContext(ctx: AppContext, trip: Trip, stops: Stop[], profile: Profile, airports: OriginAirport[]): Promise<{ rc: FlightRankContext; notes: string[] }> {
+   const notes: string[] = [];
+   const cost: Record<string, number> = {}; const minutes: Record<string, number> = {};
+   const home = profile.homePlace ?? trip.origin;
+   for (const a of airports) {
+-    const ac = airportCoords(trip.origin, a);
+-    if (!home || !ac) continue;
++    if (!home || a.lat === null || a.lng === null) continue;
++    const ac = { lat: a.lat, lng: a.lng };
+     const km = haversineKm(home, ac) * 1.3;
+     let mins = Math.round(15 + (km / 60) * 60);
+     if (ctx.providers.routes.configured()) {
+       try { mins = (await ctx.providers.routes.travelMinutes(home, ac, new Date(`${trip.startDate}T06:00:00Z`), 'DRIVE')).minutes; }
+-      catch { notes.push(`Transfer time to ${a} is a planning estimate (route service unavailable).`); }
++      catch { notes.push(`Transfer time to ${a.iata} is a planning estimate (route service unavailable).`); }
+     }
+-    minutes[a] = mins; cost[a] = Math.round(km * 0.25 * 2);
++    minutes[a.iata] = mins; cost[a.iata] = Math.round(km * 0.25 * 2);
+   }
+   const dest = stops[0]?.place; const last = stops[stops.length - 1]?.place;
+   for (const p of [dest, last]) {
+@@ -105,15 +131,26 @@ async function rankContext(ctx: AppContext, trip: Trip, stops: Stop[], profile:
+ }
+ 
+ async function searchFlightsAcross(ctx: AppContext, userId: string, origins: string[], dest: string, back: string, out: string, inb: string, adults: number, currency: string) {
+-  const results = await mapLimit(origins, ctx.cfg.limits.providerConcurrency, (o) => ctx.providers.flights.searchOffers({
++  // One search for all airports when the provider supports it (saves the free monthly allowance).
++  const groups = ctx.providers.flights.multiAirport ? [origins.join(',')] : origins;
++  const results = await mapLimit(groups, ctx.cfg.limits.providerConcurrency, (o) => ctx.providers.flights.searchOffers({
+     slices: [{ origin: o, destination: dest, departureDate: out }, { origin: back, destination: o, departureDate: inb }], adults, currency, userId,
+   }));
+   const offers: FlightOffer[] = []; const failed: string[] = []; let lastErr: Error | null = null;
+-  results.forEach((r, i) => { if (r.ok) offers.push(...r.value.offers); else { failed.push(origins[i]); lastErr = r.error; } });
++  results.forEach((r, i) => { if (r.ok) offers.push(...r.value.offers); else { failed.push(groups[i]); lastErr = r.error; } });
+   if (!offers.length && lastErr) throw lastErr;
+   return { offers, failed };
+ }
+ 
++/** Explains which airport won and how far the others are. */
++function airportChoiceNote(airports: OriginAirport[], best: FlightOffer | undefined, rc: FlightRankContext): string | null {
++  if (airports.length < 2) return null;
++  const list = airports.map((a) => `${a.iata}${a.km !== null ? ` (${a.km} km)` : ''}`).join(', ');
++  const from = best?.slices[0]?.from;
++  const won = airports.find((a) => a.iata === from);
++  return `Searched ${airports.length} airports near you: ${list}.${won ? ` Best overall leaves from ${won.iata}${won.km !== null ? `, ${won.km} km away` : ''}${rc.airportTransferCost[won.iata] !== undefined ? ` (about ${rc.currency} ${rc.airportTransferCost[won.iata]} to get there and back, included in the comparison)` : ''}.` : ''}`;
++}
++
+ async function storeOffers(q: Queryable, tripId: string, searchId: string, kind: 'flight' | 'stay', stopId: string | null, items: { provider: string; providerOfferId: string; data: unknown; total: { amount: number; currency: string }; quotedAt: string; expiresAt: string | null; role: string | null; explanation: string }[]) {
+   for (const it of items) {
+     await q.query(`INSERT INTO offers(trip_id, kind, stop_id, search_id, provider, provider_offer_id, data, total_amount, currency, quoted_at, expires_at, role, explanation) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+@@ -126,16 +163,19 @@ export async function runFlightSearch(ctx: AppContext, searchId: string, userId:
+   const trip = await getOwnedTrip(ctx, userId, tripId);
+   const stops = await getStops(ctx.db, tripId);
+   const profile = await getProfile(ctx, userId);
+-  const origins = originAirports(trip, profile);
++  const airports = await originAirports(ctx, trip, profile);
++  const origins = airports.map((a) => a.iata);
+   const dest = airportOf(stops[0].place); const back = airportOf(stops[stops.length - 1].place);
+   if (!origins.length || !dest || !back) return finish(ctx.db, searchId, 'failed', null, 'An airport could not be determined for the origin or destination. Choose a city with an airport or a specific airport.');
+   const { offers, failed } = await searchFlightsAcross(ctx, userId, origins, dest, back, trip.startDate!, trip.endDate!, trip.adults, trip.currency);
+-  const { rc, notes } = await rankContext(ctx, trip, stops, profile, origins);
++  const { rc, notes } = await rankContext(ctx, trip, stops, profile, airports);
+   const complete = offers.filter((o) => !o.incomplete);
+   const ranked = rankFlights(complete.length ? complete : offers, rc, ctx.now());
+   if (complete.length < offers.length) notes.push(`${offers.length - complete.length} more outbound options are shown at their lowest round-trip price; the return flight is chosen when you select one.`);
+   if (offers.some((o) => o.provider === 'serpapi')) notes.push('Prices come from Google Flights at search time. Baggage and fare rules are not reported by this source — check them with the seller before paying.');
+-  if (failed.length) notes.push(`Searches from ${failed.join(', ')} failed; results cover ${origins.filter((o) => !failed.includes(o)).join(', ')} only.`);
++  const choice = airportChoiceNote(airports, ranked.recommended?.offer, rc);
++  if (choice) notes.unshift(choice);
++  if (failed.length && !ctx.providers.flights.multiAirport) notes.push(`Searches from ${failed.join(', ')} failed; results cover ${origins.filter((o) => !failed.includes(o)).join(', ')} only.`);
+   if (stops.length > 1) notes.push('Travel between your destinations is not included in these fares.');
+   const roleOf = new Map<FlightOffer, string>();
+   if (ranked.cheapest) roleOf.set(ranked.cheapest.offer, 'cheapest');
+@@ -154,7 +194,7 @@ export async function runFlightSearch(ctx: AppContext, searchId: string, userId:
+     // Clear roles from older searches so the trip shows the current shortlist only.
+     await q.query(`UPDATE offers SET role=NULL WHERE trip_id=$1 AND kind='flight' AND search_id<>$2 AND NOT selected`, [tripId, searchId]);
+     await finish(q, searchId, ranked.recommended ? (failed.length ? 'partial' : 'complete') : 'failed',
+-      { considered: ranked.consideredCount, excluded: ranked.excludedCount, excludedReasons: ranked.excludedReasons.slice(0, 10), origins, notes },
++      { considered: ranked.consideredCount, excluded: ranked.excludedCount, excludedReasons: ranked.excludedReasons.slice(0, 10), origins, airports, notes },
+       ranked.recommended ? null : 'No bookable offers were returned for these dates. Try other dates or airports.');
+   });
+ }
+@@ -243,7 +283,8 @@ export async function runFlexSearch(ctx: AppContext, searchId: string, userId: s
+   const trip = await getOwnedTrip(ctx, userId, tripId);
+   const stops = await getStops(ctx.db, tripId);
+   const profile = await getProfile(ctx, userId);
+-  const origin = originAirports(trip, profile)[0];
++  const airports = await originAirports(ctx, trip, profile);
++  const origin = originParam(ctx, airports);
+   const dest = airportOf(stops[0].place); const back = airportOf(stops[stops.length - 1].place);
+   if (!origin || !dest || !back) return finish(ctx.db, searchId, 'failed', null, 'An airport could not be determined for the origin or destination.');
+   const today = ctx.now().toISOString().slice(0, 10);
+@@ -253,7 +294,7 @@ export async function runFlexSearch(ctx: AppContext, searchId: string, userId: s
+     // Multi-stop: shifts change only the first and last stays; each must keep at least one night.
+     .filter((c) => stops.length === 1 || (firstStopNights - c.outShift >= 1 && lastStopNights + c.inShift >= 1));
+   const { toCheck, skipped } = planSearch(combos, ctx.cfg.limits.flexMaxCombos);
+-  const { rc } = await rankContext(ctx, trip, stops, profile, [origin]);
++  const { rc } = await rankContext(ctx, trip, stops, profile, airports);
+   const flightRes = await mapLimit(toCheck, ctx.cfg.limits.providerConcurrency, async (c) => {
+     const key = `flex:${origin}:${dest}:${back}:${c.outbound}:${c.inbound}:${trip.adults}:${trip.currency}`;
+     const cached = await cacheGet<FlightOffer[]>(ctx, key);
+@@ -285,8 +326,10 @@ export async function runFlexSearch(ctx: AppContext, searchId: string, userId: s
+     });
+     res.forEach((r, i) => stayAmounts.set(stayCombos[i], r.ok ? r.value : null));
+   }
+-  const transfers: CostLine[] = Object.entries(rc.airportTransferCost).filter(([a]) => [origin, dest, back].includes(a)).map(([a, amt]) => ({ label: `Ground transfers ${a} (planning estimate)`, amount: amt, kind: 'estimate' }));
+-  const costs: ComboCost[] = priced.map((p) => computeComboCost(p.combo, { amount: p.flight, offerId: p.offerId }, stayAmounts.get(p.combo) ?? null, { transfers, interCity: [], fees: [] }));
++  // Transfers: to whichever home airport the combination's flight uses, plus destination airports.
++  const transfersFor = (offer: FlightOffer): CostLine[] => [...new Set([offer.slices[0]?.from, dest, back])].filter((a): a is string => !!a && rc.airportTransferCost[a] !== undefined)
++    .map((a) => ({ label: `Ground transfers ${a} (planning estimate)`, amount: rc.airportTransferCost[a], kind: 'estimate' }));
++  const costs: ComboCost[] = priced.map((p) => computeComboCost(p.combo, { amount: p.flight, offerId: p.offerId }, stayAmounts.get(p.combo) ?? null, { transfers: transfersFor(p.offer), interCity: [], fees: [] }));
+   const rec = recommendFlex(costs, skipped, failed);
+   if (!staysConfigured) rec.coverage.notes.push('Accommodation quotes are unavailable, so complete trip costs cannot be compared yet; only flight prices are shown.');
+   const status = rec.recommended ? (failed.length || skipped.length ? 'partial' : 'complete') : 'partial';
+@@ -315,7 +358,8 @@ interface AiDestination { city: string; country: string; iata: string; interestT
+ export async function runDestinationSearch(ctx: AppContext, searchId: string, userId: string, tripId: string) {
+   const trip = await getOwnedTrip(ctx, userId, tripId);
+   const profile = await getProfile(ctx, userId);
+-  const origin = originAirports(trip, profile)[0];
++  const airports = await originAirports(ctx, trip, profile);
++  const origin = originParam(ctx, airports);
+   if (!origin) return finish(ctx.db, searchId, 'failed', null, 'Choose an origin with an airport.');
+   const nights = daysBetween(trip.startDate!, trip.endDate!);
+   const ideas = await ctx.providers.ai.json<{ destinations: AiDestination[] }>({
+@@ -324,7 +368,7 @@ export async function runDestinationSearch(ctx: AppContext, searchId: string, us
+     user: JSON.stringify({ task: 'Suggest 8 diverse destinations (cities) for this traveller. Return {"destinations":[{"city","country","iata" (main airport IATA code),"interestTags" (subset of the traveller interests that genuinely fit),"rationale" (one sentence about fit, no prices/weather)}]}',
+       origin: trip.origin?.name, originAirport: origin, startDate: trip.startDate, nights, interests: profile.interests, pace: profile.pace, hiking: profile.hikingExperience, diet: profile.diet, budgetTotal: trip.budgetTotal, currency: trip.currency }),
+   });
+-  const candidates = (ideas.destinations ?? []).filter((d) => /^[A-Z]{3}$/.test(d.iata) && d.iata !== origin).slice(0, ctx.cfg.limits.destinationCandidates);
++  const candidates = (ideas.destinations ?? []).filter((d) => /^[A-Z]{3}$/.test(d.iata) && !airports.some((a) => a.iata === d.iata)).slice(0, ctx.cfg.limits.destinationCandidates);
+   const verified = await mapLimit(candidates, ctx.cfg.limits.providerConcurrency, async (d): Promise<DestinationEvidence | null> => {
+     const places = await ctx.providers.flights.searchPlaces(d.iata);
+     const place = places.find((p) => p.iata === d.iata) ?? places.find((p) => p.airports?.some((a) => a.iata === d.iata));
+diff --git a/src/web/app.ts b/src/web/app.ts
+index 6bf66c3..139c5b2 100644
+--- a/src/web/app.ts
++++ b/src/web/app.ts
+@@ -5,6 +5,8 @@ import { accountView, profileView } from './views/profile.ts';
+ import { newTripView, tripsView } from './views/trips.ts';
+ import { tripView } from './views/trip.ts';
+ import { adminView, bookingsView, notificationsView } from './views/organiser.ts';
++import { homeView } from './views/home.ts';
++import { ideasView } from './views/ideas.ts';
+ 
+ export const session: { user: null | { id: string; email: string; role: string; displayName: string }; googleLogin: boolean } = { user: null, googleLogin: false };
+ 
+@@ -15,15 +17,16 @@ export async function refreshSession() {
+ 
+ export function navigate(path: string) { history.pushState(null, '', path); void route(); }
+ 
+-const PUBLIC = ['/login', '/register', '/verify-email', '/forgot-password', '/reset-password'];
++// Pages anyone can open without an account. Everything else asks to sign in and comes back afterwards.
++const PUBLIC = ['/', '/ideas', '/login', '/register', '/verify-email', '/forgot-password', '/reset-password'];
+ 
+ function nav() {
+   const u = session.user;
+-  const links: [string, string][] = u ? [['/', 'Trips'], ['/bookings', 'Bookings'], ['/notifications', 'Reminders'], ['/profile', 'Profile'], ['/account', 'Account']] : [['/login', 'Sign in'], ['/register', 'Create account']];
++  const links: [string, string][] = u ? [['/', 'Dashboard'], ['/ideas', 'Trip ideas'], ['/bookings', 'Bookings'], ['/notifications', 'Reminders'], ['/profile', 'Profile'], ['/account', 'Account']] : [['/', 'Dashboard'], ['/ideas', 'Trip ideas'], ['/login', 'Sign in'], ['/register', 'Create account']];
+   if (u?.role === 'admin') links.push(['/admin', 'Admin']);
+   return h('header', { class: 'site' }, h('a', { class: 'brand', href: '/' }, h('span', { class: 'needle', 'aria-hidden': 'true' }, '◈'), 'Travel Compass'),
+     h('nav', { 'aria-label': 'Main' }, ...links.map(([href, l]) => h('a', { href, 'aria-current': location.pathname === href ? 'page' : undefined }, l)),
+-      u ? h('button', { class: 'ghost small', on: { click: async () => { await post('/api/auth/logout'); await refreshSession(); navigate('/login'); } } }, 'Sign out') : null));
++      u ? h('button', { class: 'ghost small', on: { click: async () => { await post('/api/auth/logout'); await refreshSession(); navigate('/'); } } }, 'Sign out') : null));
+ }
+ 
+ export async function route() {
+@@ -31,7 +34,7 @@ export async function route() {
+   const main = h('main', { id: 'main', tabindex: '-1' });
+   replace(app, h('a', { class: 'skip', href: '#main' }, 'Skip to content'), nav(), main);
+   const p = location.pathname;
+-  if (!session.user && !PUBLIC.includes(p)) { history.replaceState(null, '', '/login'); return loginView(main); }
++  if (!session.user && !PUBLIC.includes(p)) { history.replaceState(null, '', `/login?next=${encodeURIComponent(p + location.search)}`); return loginView(main); }
+   const m = /^\/trips\/([0-9a-f-]{36})(?:\/bookings)?$/.exec(p);
+   if (p === '/login') return loginView(main);
+   if (p === '/register') return registerView(main);
+@@ -46,11 +49,9 @@ export async function route() {
+   if (p === '/admin') return adminView(main);
+   if (p === '/trips/new') return newTripView(main);
+   if (m) return tripView(main, m[1]);
+-  if (p === '/') {
+-    const prof = await get('/api/profile').catch(() => null);
+-    if (prof && !prof.onboardingComplete) { history.replaceState(null, '', '/welcome'); return profileView(main, true); }
+-    return tripsView(main);
+-  }
++  if (p === '/ideas') return ideasView(main);
++  if (p === '/trips') return tripsView(main);
++  if (p === '/') return homeView(main);
+   replace(main, h('div', { class: 'page narrow' }, h('h1', null, 'Page not found'), h('a', { href: '/' }, 'Back to your trips')));
+ }
+ 
+@@ -63,6 +64,6 @@ export async function start() {
+     if (href.startsWith('/') && !href.startsWith('/api/')) { e.preventDefault(); navigate(href); }
+   });
+   window.addEventListener('popstate', () => void route());
+-  window.addEventListener('tc:unauthenticated', async () => { await refreshSession().catch(() => {}); if (!session.user && !PUBLIC.includes(location.pathname)) navigate('/login'); });
++  window.addEventListener('tc:unauthenticated', async () => { await refreshSession().catch(() => {}); if (!session.user && !PUBLIC.includes(location.pathname)) navigate(`/login?next=${encodeURIComponent(location.pathname + location.search)}`); });
+   await route();
+ }
+diff --git a/src/web/views/auth.ts b/src/web/views/auth.ts
+index c32cb5e..2571709 100644
+--- a/src/web/views/auth.ts
++++ b/src/web/views/auth.ts
+@@ -3,6 +3,12 @@ import { h, replace, toast } from '../dom.ts';
+ import { errorBox, field } from '../components.ts';
+ import { navigate, refreshSession, session } from '../app.ts';
+ 
++/** Where to go after signing in: a same-site path from ?next=, else the dashboard. */
++export function nextPath() {
++  const n = new URLSearchParams(location.search).get('next') ?? '/';
++  return n.startsWith('/') && !n.startsWith('//') && !n.startsWith('/login') ? n : '/';
++}
++
+ function card(title: string, sub: string, ...body: (Node | null)[]) {
+   return h('section', { class: 'auth-card' }, h('h1', null, title), h('p', { class: 'lede' }, sub), ...body);
+ }
+@@ -21,7 +27,7 @@ export function loginView(root: HTMLElement) {
+   const { f, btn } = form(async (fd, msg) => {
+     try {
+       await post('/api/auth/login', { email: fd.get('email'), password: fd.get('password') });
+-      await refreshSession(); navigate('/');
++      await refreshSession(); navigate(nextPath());
+     } catch (e) {
+       if (e instanceof ApiError && e.code === 'email_not_verified') {
+         replace(msg, h('div', { class: 'notice warn' }, h('p', null, e.message), h('button', { type: 'button', class: 'secondary small', on: { click: async () => { await post('/api/auth/resend-verification', { email: fd.get('email') }); toast('Verification email sent'); } } }, 'Send a new link')));
+diff --git a/src/web/views/book.ts b/src/web/views/book.ts
+new file mode 100644
+index 0000000..9fbd3d3
+--- /dev/null
++++ b/src/web/views/book.ts
+@@ -0,0 +1,57 @@
++// "Book everything" tab: one checklist with the best and cheapest live options, and prefilled comparison links
++// for things without a free price feed (hostels, Airbnb, car rental, trains, tickets).
++import { get, post } from '../api.ts';
++import { extLink, fmtMoney, h, replace, toast } from '../dom.ts';
++import { badge, errorBox, loading } from '../components.ts';
++import { bookingPanel } from './booking.ts';
++
++const SECTION: Record<string, string> = { flights: 'Flights', stays: 'Places to stay', transport: 'Getting around', car: 'Car rental', activities: 'Tickets & reservations', extras: 'Before you go' };
++const STATUS: Record<string, [string, 'ok' | 'warn' | 'bad' | 'info' | 'muted']> = {
++  booked: ['Booked', 'ok'], chosen: ['Chosen — finish booking', 'info'], to_book: ['To book', 'warn'], search_needed: ['Needs a search', 'muted'], optional: ['Optional', 'muted'],
++};
++const ROLE: Record<string, string> = { recommended: 'Best value', cheapest: 'Cheapest', convenient: 'Most convenient', comfortable: 'Most comfortable' };
++
++export async function bookTab(c: { id: string; refresh: () => Promise<void>; root: HTMLElement }) {
++  const root = c.root;
++  let polls = 0;
++  const load = async (): Promise<void> => {
++    let plan: any; let running = false;
++    try {
++      const [p, s] = await Promise.all([get(`/api/trips/${c.id}/book`), get(`/api/trips/${c.id}/searches`).catch(() => [])]);
++      plan = p; running = (s as any[]).some((x) => x.status === 'running');
++    } catch (e) { replace(root, errorBox(e, load)); return; }
++    const missing = plan.items.filter((i: any) => i.status === 'search_needed').map((i: any) => i.section);
++    const startMissing = async () => {
++      for (const kind of [...new Set(missing.map((m: string) => (m === 'flights' ? 'flight' : 'stay')))]) {
++        try { await post(`/api/trips/${c.id}/searches`, { kind }); } catch (e) { toast((e as Error).message, 'error'); }
++      }
++      polls = 0; void load();
++    };
++    const bySection = new Map<string, any[]>();
++    for (const it of plan.items) bySection.set(it.section, [...(bySection.get(it.section) ?? []), it]);
++    replace(root,
++      h('section', { class: 'panel book-summary' },
++        h('div', { class: 'page-head' }, h('h2', null, 'Everything to book'), running ? badge('Searching live prices…', 'info') : null),
++        h('p', null, `${plan.counts.toBook} to book · ${plan.counts.booked} booked`),
++        plan.totals.recommended ? h('p', { class: 'small' }, `Flights + stays: about ${fmtMoney(plan.totals.recommended, plan.totals.currency)} (best value) or ${fmtMoney(plan.totals.cheapest, plan.totals.currency)} (cheapest). ${plan.totals.note}`) : null,
++        plan.trip.budgetTotal && plan.totals.cheapest > plan.trip.budgetTotal ? h('p', { class: 'notice warn' }, `The cheapest combination is over your ${fmtMoney(plan.trip.budgetTotal, plan.totals.currency)} budget.`) : null,
++        missing.length && !running ? h('button', { class: 'primary small', on: { click: startMissing } }, 'Search live prices now') : null,
++        h('p', { class: 'small muted' }, 'You book and pay on the airline, hotel or rental site. Travel Compass never takes payment. Add bookings you made elsewhere on the Bookings tab so this list stays current.')),
++      ...[...bySection.entries()].map(([sec, items]) => h('section', { class: 'panel' }, h('h2', null, SECTION[sec] ?? sec),
++        h('ul', { class: 'book-list' }, ...items.map((it: any) => h('li', { class: `book-item ${it.status}` },
++          h('div', { class: 'page-head' }, h('div', null, h('h3', null, it.title), h('p', { class: 'small mono' }, it.subtitle)), badge(...STATUS[it.status])),
++          it.options.length ? h('div', { class: 'book-options' }, ...it.options.map((o: any) => h('article', { class: `offer ${o.role}` },
++            h('p', { class: 'role' }, ROLE[o.role] ?? o.role),
++            h('p', { class: 'price' }, o.price ? fmtMoney(o.price.amount, o.price.currency) : '—'),
++            h('p', null, h('strong', null, o.title)),
++            h('p', { class: 'small' }, o.detail),
++            h('div', { class: 'actions' },
++              o.offer && it.status !== 'booked' ? h('button', { class: o.role === 'recommended' ? 'primary small' : 'secondary small', on: { click: () => bookingPanel(o.offer, async () => { await c.refresh(); }) } }, o.offer.selected ? 'Continue booking' : 'Book') : null,
++              o.link ? extLink(o.link, 'View') : null)))) : null,
++          it.note ? h('p', { class: 'small' }, it.note) : null,
++          it.links.length ? h('p', { class: 'links small' }, 'Compare: ', ...it.links.flatMap((l: any, i: number) => [i ? ' · ' : '', extLink(l.url, l.label)])) : null))))));
++    if (running && polls++ < 40) setTimeout(() => { if (root.isConnected) void load(); }, 4000);
++  };
++  replace(root, loading('Collecting everything you need to book…'));
++  await load();
++}
+diff --git a/src/web/views/home.ts b/src/web/views/home.ts
+new file mode 100644
+index 0000000..569b533
+--- /dev/null
++++ b/src/web/views/home.ts
+@@ -0,0 +1,83 @@
++// Dashboard: the first page for everyone. Visitors can pick their city and see upcoming holiday windows and
++// nearby airports without an account; live prices and saved trips need sign-in (they use the free search allowance).
++import { get } from '../api.ts';
++import { fmtDate, h, replace } from '../dom.ts';
++import { badge, errorBox, loading, placePicker } from '../components.ts';
++import { navigate, session } from '../app.ts';
++import { tripsList } from './trips.ts';
++import type { Place } from '../../shared/types.ts';
++
++const HOME_KEY = 'tc.home';
++export function savedHome(): Place | null { try { return JSON.parse(localStorage.getItem(HOME_KEY) ?? 'null'); } catch { return null; } }
++export function saveHome(p: Place | null) { try { if (p) localStorage.setItem(HOME_KEY, JSON.stringify(p)); else localStorage.removeItem(HOME_KEY); } catch { /* storage unavailable */ } }
++
++export function windowCard(w: any, extra?: Node | null) {
++  return h('li', { class: 'window-card' },
++    h('p', { class: 'eyebrow mono' }, `${fmtDate(w.start)} → ${fmtDate(w.end)} · ${w.nights} night${w.nights > 1 ? 's' : ''}`),
++    h('h3', null, w.label),
++    h('p', { class: 'small' }, w.leaveDays === 0 ? badge('No leave days needed', 'ok') : badge(`${w.leaveDays} leave day${w.leaveDays > 1 ? 's' : ''}`, w.leaveDays <= 1 ? 'info' : 'muted'), w.needsBridgeDay ? ' bridge day' : ''),
++    extra ?? null);
++}
++
++export async function homeView(root: HTMLElement) {
++  const signedIn = !!session.user;
++  let home: Place | null = savedHome();
++  let prof: any = null;
++  if (signedIn) {
++    prof = await get('/api/profile').catch(() => null);
++    if (prof && !prof.onboardingComplete) { navigate('/welcome'); return; }
++    home = prof?.homePlace ?? home;
++  }
++  const windowsBox = h('div');
++  const airportsBox = h('div');
++  const showFor = async (p: Place | null) => {
++    replace(airportsBox); replace(windowsBox);
++    if (!p) return;
++    const aps = p.kind === 'airport' ? [{ iata: p.iata, name: p.name }] : p.airports ?? [];
++    replace(airportsBox, aps.length
++      ? h('p', { class: 'small' }, 'Airports we compare for you: ', ...aps.map((a: any) => h('span', { class: 'chip mono' }, a.iata)), h('span', { class: 'muted' }, ' — plus other sizeable airports within 150 km when we search. The cheapest overall (fare + getting there) wins.'))
++      : h('p', { class: 'small muted' }, 'No airport found near this place — try the nearest big city.'));
++    if (!p.countryCode) return;
++    replace(windowsBox, loading('Finding your next long weekends…'));
++    try {
++      const w = await get(`/api/public/windows?country=${p.countryCode}&months=6`);
++      replace(windowsBox,
++        h('h2', null, 'Best dates to get away'),
++        h('p', { class: 'small muted' }, w.note, w.source ? [' Source: ', h('a', { href: w.source.url, target: '_blank', rel: 'noopener' }, w.source.name), '.'] : ''),
++        h('ul', { class: 'window-grid' }, ...w.windows.slice(0, 8).map((x: any) => windowCard(x,
++          h('a', { class: 'button small primary', href: `/ideas?window=${x.id}` }, signedIn ? 'Find trips for these dates' : 'See prices (sign in)')))));
++    } catch (e) { replace(windowsBox, errorBox(e, () => showFor(p))); }
++  };
++
++  const picker = placePicker({ label: 'Where do you start from?', value: home, allowLocate: true, placeholder: 'Your city', onChange: (p) => { home = p; saveHome(p); void showFor(p); } });
++  const hero = h('section', { class: 'hero panel' },
++    h('h1', null, signedIn ? `Hi ${session.user!.displayName.split(' ')[0]} — where next?` : 'Where should you go next — and when?'),
++    h('p', { class: 'lede' }, 'Pick your city. We find the long weekends and holiday weeks that save leave days, compare every airport near you, and suggest the cheapest good trips. Choose one and we line up the flights, stays, car rental and tickets to book.'),
++    picker, airportsBox,
++    h('div', { class: 'actions' },
++      h('a', { class: 'button primary', href: '/ideas' }, 'Suggest trips for me'),
++      h('a', { class: 'button secondary', href: signedIn ? '/trips/new' : '/register' }, signedIn ? 'I know where I want to go' : 'Create a free account')));
++
++  const how = h('section', { class: 'panel how' }, h('h2', null, 'How it works'),
++    h('ol', { class: 'steps' },
++      h('li', null, h('strong', null, 'Dates: '), 'your country\'s public holidays and long weekends, ranked by leave days needed.'),
++      h('li', null, h('strong', null, 'Airports: '), 'all sizeable airports near you in one search; travel to the airport is added to the price.'),
++      h('li', null, h('strong', null, 'Ideas: '), 'cheapest destinations for those dates (Google flight + hotel prices), with the weather.'),
++      h('li', null, h('strong', null, 'Book: '), 'best and cheapest flights and stays, plus hostels, Airbnb, car rental and tickets — you pay on the seller\'s site.')),
++    signedIn ? null : h('p', { class: 'small muted' }, 'Browsing is free and needs no account. Live prices need a free account because each search uses part of a small monthly allowance.'));
++
++  const trips = h('div');
++  replace(root, h('div', { class: 'page' }, hero, windowsBox, signedIn ? trips : how, signedIn ? how : null));
++  void showFor(home);
++  if (signedIn) {
++    replace(trips, loading());
++    try {
++      const [list, latest] = await Promise.all([get('/api/trips'), get('/api/ideas/latest').catch(() => null)]);
++      replace(trips,
++        latest?.result?.ideas?.length ? h('section', { class: 'panel' }, h('div', { class: 'page-head' }, h('h2', null, 'Your latest trip ideas'), h('a', { href: `/ideas?id=${latest.id}` }, 'Open')),
++          h('p', { class: 'small muted' }, `${latest.result.ideas.length} ideas from ${latest.params.origin?.name ?? 'home'} · ${new Date(latest.createdAt).toLocaleDateString()}`)) : null,
++        h('div', { class: 'page-head' }, h('h2', null, 'Your trips'), h('a', { class: 'button small primary', href: '/trips/new' }, 'Plan a trip')),
++        tripsList(list));
++    } catch (e) { replace(trips, errorBox(e)); }
++  }
++}
+diff --git a/src/web/views/ideas.ts b/src/web/views/ideas.ts
+new file mode 100644
+index 0000000..f538415
+--- /dev/null
++++ b/src/web/views/ideas.ts
+@@ -0,0 +1,97 @@
++// Trip ideas: holiday-aware dates × cheapest destinations from every airport near home. Choosing an idea creates
++// the trip and starts flights, stays and itinerary searches, then opens the "Book everything" checklist.
++import { ApiError, get, post } from '../api.ts';
++import { extLink, fmtDate, fmtMoney, h, hrs, replace, toast } from '../dom.ts';
++import { badge, errorBox, field, loading, placePicker } from '../components.ts';
++import { navigate, session } from '../app.ts';
++import { savedHome, saveHome, windowCard } from './home.ts';
++import type { Place } from '../../shared/types.ts';
++
++export async function ideasView(root: HTMLElement) {
++  const q = new URLSearchParams(location.search);
++  const signedIn = !!session.user;
++  const prof = signedIn ? await get('/api/profile').catch(() => null) : null;
++  const st = { origin: (prof?.homePlace ?? savedHome()) as Place | null, months: 6, adults: 1, budget: (prof?.budgetTotal ?? null) as number | null, currency: (prof?.currency ?? 'EUR') as string, picked: new Set<string>(q.get('window') ? [q.get('window')!] : []) };
++  const windowsBox = h('div'); const results = h('div', { 'aria-live': 'polite' });
++  let windows: any[] = [];
++
++  const renderWindows = () => replace(windowsBox, windows.length ? [
++    h('h2', null, 'Pick up to 3 date windows (or let us choose)'),
++    h('ul', { class: 'window-grid' }, ...windows.slice(0, 12).map((w) => windowCard(w, h('label', { class: 'chip' }, h('input', { type: 'checkbox', checked: st.picked.has(w.id), on: { change: (e: Event) => {
++      const on = (e.target as HTMLInputElement).checked;
++      if (on && st.picked.size >= 3) { (e.target as HTMLInputElement).checked = false; toast('Choose at most 3 windows — each one uses a live search.', 'error'); return; }
++      if (on) st.picked.add(w.id); else st.picked.delete(w.id);
++    } } }), 'Price these dates')))),
++  ] : null);
++
++  const loadWindows = async () => {
++    if (!st.origin?.countryCode) { windows = []; renderWindows(); return; }
++    replace(windowsBox, loading('Finding holidays and long weekends…'));
++    try { windows = (await get(`/api/public/windows?country=${st.origin.countryCode}&months=${st.months}`)).windows; renderWindows(); }
++    catch (e) { replace(windowsBox, errorBox(e, loadWindows)); }
++  };
++
++  const run = async () => {
++    if (!signedIn) { navigate(`/login?next=${encodeURIComponent(location.pathname + location.search)}`); return; }
++    if (!st.origin) { replace(results, errorBox(new Error('Choose your home city first.'))); return; }
++    replace(results, loading('Searching every airport near you for the cheapest trips…'));
++    try {
++      const { ideaId } = await post('/api/ideas', { origin: st.origin, months: st.months, adults: st.adults, budget: st.budget, currency: st.currency, windowIds: [...st.picked] });
++      history.replaceState(null, '', `/ideas?id=${ideaId}`);
++      await poll(ideaId);
++    } catch (e) { replace(results, errorBox(e, run)); }
++  };
++
++  const poll = async (id: string) => {
++    const started = Date.now();
++    for (;;) {
++      const r = await get(`/api/ideas/${id}`);
++      if (r.status !== 'running') { renderIdeas(r); return; }
++      if (Date.now() - started > 150000) { replace(results, errorBox(new ApiError(0, 'timeout', 'Still searching — come back to this page in a minute.', true, null), () => poll(id))); return; }
++      await new Promise((res) => setTimeout(res, 2000));
++    }
++  };
++
++  const renderIdeas = (r: any) => {
++    if (r.status === 'failed') { replace(results, errorBox(new Error(r.error ?? 'No ideas found.'), run)); return; }
++    const res = r.result;
++    const cur = r.params.currency;
++    replace(results,
++      h('div', { class: 'page-head' }, h('h2', null, 'Trip ideas'), badge(r.status === 'partial' ? 'Some dates missing' : 'Live prices', r.status === 'partial' ? 'warn' : 'ok')),
++      h('p', { class: 'small' }, 'From any of: ', ...res.airports.map((a: any) => h('span', { class: 'chip mono', title: a.name }, `${a.iata}${a.km !== null ? ` · ${a.km} km` : ''}`))),
++      h('ul', { class: 'idea-grid' }, ...res.ideas.map((x: any) => h('li', { class: 'idea-card' },
++        x.destination.thumbnail ? h('img', { src: x.destination.thumbnail, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' }) : null,
++        h('div', { class: 'idea-body' },
++          h('p', { class: 'eyebrow mono' }, `${fmtDate(x.window.start)} → ${fmtDate(x.window.end)} · ${x.nights}n · ${x.window.label}`),
++          h('h3', null, `${x.destination.name}`, h('span', { class: 'muted small' }, ` ${x.destination.country} · ${x.destination.iata}`)),
++          h('p', { class: 'price-line' }, h('strong', null, fmtMoney(x.total, cur)), h('span', { class: 'small muted' }, ' est. total')),
++          h('p', { class: 'small' }, `Flight ${fmtMoney(x.flight.price, cur)}${x.flight.minutes ? ` · ${hrs(x.flight.minutes)}` : ''}${x.flight.stops === 0 ? ' · direct' : x.flight.stops ? ` · ${x.flight.stops} stop` : ''}${x.flight.airline ? ` · ${x.flight.airline}` : ''}`,
++            h('br'), x.hotelPerNight !== null ? `Hotel from ${fmtMoney(x.hotelPerNight, cur)}/night` : 'Hotel price not shown',
++            x.weather?.tempMaxC !== null && x.weather?.tempMaxC !== undefined ? [h('br'), `${x.weather.kind === 'forecast' ? 'Forecast' : 'Typical'} ${Math.round(x.weather.tempMaxC)}°C${x.weather.precipitationProbability !== null ? ` · ${Math.round(x.weather.precipitationProbability)}% rain` : ''}`] : null),
++          x.reasons.length ? h('ul', { class: 'reasons small' }, ...x.reasons.map((t: string) => h('li', null, t))) : null,
++          x.caveats.length ? h('ul', { class: 'caveats small' }, ...x.caveats.map((t: string) => h('li', null, t))) : null,
++          h('div', { class: 'actions' },
++            h('button', { class: 'primary small', on: { click: async (e: Event) => {
++              const b = e.target as HTMLButtonElement; b.disabled = true; b.textContent = 'Creating trip…';
++              try { const c = await post(`/api/ideas/${r.id}/choose`, { index: x.index }); toast('Trip created — fetching flights, stays and a day plan'); navigate(`/trips/${c.tripId}?tab=book`); }
++              catch (err) { b.disabled = false; b.textContent = 'Choose this trip'; toast((err as Error).message, 'error'); }
++            } } }, 'Choose this trip'),
++            x.link ? extLink(x.link, 'See on Google') : null))))),
++      ...res.notes.map((n: string) => h('p', { class: 'small muted' }, n)),
++      res.holidaySource ? h('p', { class: 'small muted' }, 'Holiday data: ', extLink(res.holidaySource.url, res.holidaySource.name)) : null);
++  };
++
++  const form = h('div', { class: 'panel stack' },
++    placePicker({ label: 'Starting from', value: st.origin, allowLocate: true, placeholder: 'Your city', onChange: (p) => { st.origin = p; saveHome(p); st.picked.clear(); void loadWindows(); } }),
++    h('div', { class: 'grid3' },
++      field('Look ahead', h('select', { on: { change: (e: Event) => { st.months = Number((e.target as HTMLSelectElement).value); void loadWindows(); } } }, ...[2, 3, 6, 9, 12].map((m) => h('option', { value: m, selected: m === st.months }, `${m} months`)))),
++      field('Travellers', h('input', { type: 'number', min: 1, max: 9, value: st.adults, on: { input: (e: Event) => (st.adults = Number((e.target as HTMLInputElement).value) || 1) } })),
++      field(`Budget per trip (${st.currency})`, h('input', { type: 'number', min: 0, value: st.budget ?? '', placeholder: 'Any', on: { input: (e: Event) => { const v = (e.target as HTMLInputElement).value; st.budget = v ? Number(v) : null; } } }))),
++    h('button', { class: 'primary', on: { click: run } }, signedIn ? 'Find the best trips' : 'Sign in to see live prices'),
++    h('p', { class: 'small muted' }, 'Each date window you price uses one live search from the free monthly allowance. Without a pick we choose the 3 windows that need the fewest leave days.'));
++
++  replace(root, h('div', { class: 'page' }, h('h1', null, 'Suggest trips for me'), h('p', { class: 'lede' }, 'Holiday-smart dates, every airport near you, the cheapest good destinations.'), form, windowsBox, results));
++  void loadWindows();
++  const id = q.get('id');
++  if (id && signedIn) { replace(results, loading()); void poll(id).catch((e) => replace(results, errorBox(e))); }
++}
+diff --git a/src/web/views/profile.ts b/src/web/views/profile.ts
+index 5893f10..01130d4 100644
+--- a/src/web/views/profile.ts
++++ b/src/web/views/profile.ts
+@@ -38,8 +38,12 @@ export async function profileView(root: HTMLElement, onboarding = false) {
+   } } },
+     h('fieldset', null, h('legend', null, 'About you'),
+       field('Display name', txt(state.displayName ?? '', (s) => (state.displayName = s), { maxlength: 80 })),
+-      placePicker({ label: 'Home city', value: state.homePlace, allowLocate: true, onChange: (pl) => { state.homePlace = pl; if (pl?.timeZone) state.timeZone = pl.timeZone; } }),
+-      h('div', { class: 'field' }, h('span', { class: 'label' }, 'Preferred departure airports'), airports), addAirport,
++      placePicker({ label: 'Home city', value: state.homePlace, allowLocate: true, onChange: (pl) => {
++        state.homePlace = pl; if (pl?.timeZone) state.timeZone = pl.timeZone;
++        // Pre-fill departure airports with the airports near home; the flight search also adds others within 150 km.
++        if (pl && !state.departureAirports.length) { for (const a of pl.kind === 'airport' ? [{ iata: pl.iata!, name: pl.name, cityName: pl.cityName }] : (pl.airports ?? []).map((a) => ({ iata: a.iata, name: a.name, cityName: pl.name }))) if (state.departureAirports.length < 5) state.departureAirports.push(a); renderAirports(); }
++      } }),
++      h('div', { class: 'field' }, h('span', { class: 'label' }, 'Preferred departure airports'), airports, h('small', { class: 'hint' }, 'Filled in from your home city. Flight searches also check other sizeable airports within 150 km in the same search and pick the cheapest overall, including getting to the airport.')), addAirport,
+       h('div', { class: 'grid2' }, field('Time zone', txt(state.timeZone, (s) => (state.timeZone = s), { list: 'tzlist' })), field('Currency', txt(state.currency, (s) => (state.currency = s), { maxlength: 3, pattern: '[A-Za-z]{3}' }))),
+       h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: state.contactEmailOptIn, on: { change: (e: Event) => (state.contactEmailOptIn = (e.target as HTMLInputElement).checked) } }), 'Email me trip updates (optional)')),
+     h('fieldset', null, h('legend', null, 'Food'),
+diff --git a/src/web/views/trip.ts b/src/web/views/trip.ts
+index f690fe7..c2fa4af 100644
+--- a/src/web/views/trip.ts
++++ b/src/web/views/trip.ts
+@@ -4,10 +4,11 @@ import { extLink, fmtDate, fmtDateTime, fmtMoney, h, hrs, replace, toast } from
+ import { badge, errorBox, field, loading, placePicker } from '../components.ts';
+ import { navigate } from '../app.ts';
+ import { bookingPanel } from './booking.ts';
++import { bookTab } from './book.ts';
+ import type { Place } from '../../shared/types.ts';
+ 
+-type Tab = 'plan' | 'discover' | 'flights' | 'stays' | 'flex' | 'bookings' | 'reminders';
+-const TABS: [Tab, string][] = [['plan', 'Itinerary'], ['discover', 'Destinations'], ['flights', 'Flights'], ['stays', 'Stays'], ['flex', 'Flexible dates'], ['bookings', 'Bookings'], ['reminders', 'Reminders']];
++type Tab = 'book' | 'plan' | 'discover' | 'flights' | 'stays' | 'flex' | 'bookings' | 'reminders';
++const TABS: [Tab, string][] = [['book', 'Book everything'], ['plan', 'Itinerary'], ['discover', 'Destinations'], ['flights', 'Flights'], ['stays', 'Stays'], ['flex', 'Flexible dates'], ['bookings', 'Bookings'], ['reminders', 'Reminders']];
+ 
+ export async function tripView(root: HTMLElement, id: string) {
+   const q = new URLSearchParams(location.search);
+@@ -30,7 +31,7 @@ export async function tripView(root: HTMLElement, id: string) {
+   const refresh = async () => { await load(); renderHeader(); renderBody(); };
+   const renderBody = () => {
+     const ctx = { id, detail, refresh, root: body };
+-    const map: Record<Tab, (c: typeof ctx) => void> = { plan: planTab, discover: discoverTab, flights: flightsTab, stays: staysTab, flex: flexTab, bookings: bookingsTab, reminders: remindersTab };
++    const map: Record<Tab, (c: typeof ctx) => void> = { book: (x) => bookTab(x), plan: planTab, discover: discoverTab, flights: flightsTab, stays: staysTab, flex: flexTab, bookings: bookingsTab, reminders: remindersTab };
+     replace(body, loading()); map[tab](ctx);
+   };
+   replace(root, h('div', { class: 'page wide' }, header, tabs, body));
+diff --git a/src/web/views/trips.ts b/src/web/views/trips.ts
+index a6d353a..c9be4d3 100644
+--- a/src/web/views/trips.ts
++++ b/src/web/views/trips.ts
+@@ -8,17 +8,21 @@ const PLAN_BADGE: Record<string, [string, 'ok' | 'warn' | 'bad' | 'info' | 'mute
+   none: ['No plan yet', 'muted'], generating: ['Researching…', 'info'], complete: ['Plan complete', 'ok'], incomplete: ['Plan incomplete', 'warn'], failed: ['Plan failed', 'bad'],
+ };
+ 
++export function tripsList(trips: any[]) {
++  return trips.length ? h('ul', { class: 'trip-grid' }, ...trips.map((t: any) => h('li', null, h('a', { class: 'trip-card', href: `/trips/${t.id}` },
++    h('span', { class: 'ticket-stub' }, t.origin?.iata ?? '···', ' → '),
++    h('h2', null, t.title), h('p', { class: 'mono' }, t.startDate ? `${fmtDate(t.startDate)} – ${fmtDate(t.endDate)}` : 'Dates not set'),
++    h('p', null, badge(...(PLAN_BADGE[t.planStatus] ?? ['', 'muted'])), ' ', badge(t.status, t.status === 'booked' ? 'ok' : 'muted'), t.budgetTotal ? ` · budget ${fmtMoney(t.budgetTotal, t.currency)}` : '')))))
++    : h('div', { class: 'empty' }, h('p', null, 'No trips yet. Let us suggest one, or plan your own.'), h('a', { class: 'button primary', href: '/ideas' }, 'Suggest trips'), ' ', h('a', { class: 'button secondary', href: '/trips/new' }, 'Plan my own'));
++}
++
+ export async function tripsView(root: HTMLElement) {
+   replace(root, loading());
+   try {
+     const trips = await get('/api/trips');
+     replace(root, h('div', { class: 'page' },
+       h('div', { class: 'page-head' }, h('h1', null, 'Your trips'), h('a', { class: 'button primary', href: '/trips/new' }, 'Plan a trip')),
+-      trips.length ? h('ul', { class: 'trip-grid' }, ...trips.map((t: any) => h('li', null, h('a', { class: 'trip-card', href: `/trips/${t.id}` },
+-        h('span', { class: 'ticket-stub' }, t.origin?.iata ?? '···', ' → '),
+-        h('h2', null, t.title), h('p', { class: 'mono' }, t.startDate ? `${fmtDate(t.startDate)} – ${fmtDate(t.endDate)}` : 'Dates not set'),
+-        h('p', null, badge(...(PLAN_BADGE[t.planStatus] ?? ['', 'muted'])), ' ', badge(t.status, t.status === 'booked' ? 'ok' : 'muted'), t.budgetTotal ? ` · budget ${fmtMoney(t.budgetTotal, t.currency)}` : '')))))
+-        : h('div', { class: 'empty' }, h('p', null, 'No trips yet.'), h('a', { class: 'button primary', href: '/trips/new' }, 'Start your first trip'))));
++      tripsList(trips)));
+   } catch (e) { replace(root, errorBox(e, () => tripsView(root))); }
+ }
+ 
+diff --git a/test/integration/ideas-book.test.ts b/test/integration/ideas-book.test.ts
+new file mode 100644
+index 0000000..5d02393
+--- /dev/null
++++ b/test/integration/ideas-book.test.ts
+@@ -0,0 +1,172 @@
++// MOCKED end-to-end test: public dashboard data → trip ideas (Nager.Date + Google Travel Explore from all nearby
++// airports) → choose an idea → one multi-airport Google Flights search + Google Hotels → "Book everything".
++// Real adapters, simulated network with documented response shapes. Proves wiring, not the live services.
++import { test, before, after } from 'node:test';
++import assert from 'node:assert/strict';
++import { startHarness, signUp, type Harness, type Client } from '../helpers/harness.ts';
++import { setFetch } from '../../src/server/integrations/http.ts';
++import { FreeGeo, type Airport } from '../../src/server/integrations/freegeo.ts';
++import { SerpApiExplore, SerpApiFlights, SerpApiHotels } from '../../src/server/integrations/serpapi.ts';
++import { NagerHolidays } from '../../src/server/integrations/holidays.ts';
++import type { Place } from '../../src/shared/types.ts';
++
++const AIRPORTS: Airport[] = [
++  { iata: 'BRU', name: 'Brussels Airport', city: 'Brussels', country: 'BE', lat: 50.901, lng: 4.484, size: 'large' },
++  { iata: 'CRL', name: 'Brussels South Charleroi Airport', city: 'Charleroi', country: 'BE', lat: 50.459, lng: 4.453, size: 'medium' },
++  { iata: 'LIS', name: 'Humberto Delgado Airport', city: 'Lisbon', country: 'PT', lat: 38.774, lng: -9.134, size: 'large' },
++  { iata: 'BCN', name: 'Barcelona El Prat', city: 'Barcelona', country: 'ES', lat: 41.297, lng: 2.083, size: 'large' },
++];
++const tzLookup = async (lat: number) => (lat < 40 ? 'Europe/Lisbon' : lat < 45 ? 'Europe/Madrid' : 'Europe/Brussels');
++const BRUSSELS: Place = { name: 'Brussels', kind: 'city', lat: 50.8466, lng: 4.3528, countryCode: 'BE', timeZone: 'Europe/Brussels', iata: 'BRU', cityName: 'Brussels', airports: [{ iata: 'BRU', name: 'Brussels Airport', lat: 50.901, lng: 4.484 }], source: 'photon' };
++
++const calls: { engine: string; q: URLSearchParams }[] = [];
++let nagerCalls = 0;
++const seg = (from: string, to: string, d: string, a: string, fn: string, airline: string, dur: number) => ({ departure_airport: { id: from, time: d }, arrival_airport: { id: to, time: a }, duration: dur, airline, flight_number: fn, extensions: [] });
++
++function net(): typeof fetch {
++  return (async (input: any) => {
++    const url = new URL(String(input));
++    const j = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
++    if (url.hostname === 'date.nager.at') {
++      nagerCalls++;
++      if (url.pathname.endsWith('/PublicHolidays/2027/BE')) return j([
++        { date: '2027-03-29', name: 'Easter Monday', localName: 'Paasmaandag', countryCode: 'BE', global: true },
++        { date: '2027-05-06', name: 'Ascension Day', localName: 'O.L.H. Hemelvaart', countryCode: 'BE', global: true },
++      ]);
++      if (url.pathname.endsWith('/LongWeekend/2027/BE')) return j([
++        { startDate: '2027-03-27', endDate: '2027-03-29', dayCount: 3, needBridgeDay: false },
++        { startDate: '2027-05-06', endDate: '2027-05-09', dayCount: 4, needBridgeDay: true },
++      ]);
++      return new Response('', { status: 404 });
++    }
++    if (url.hostname === 'photon.example') {
++      const q = (url.searchParams.get('q') ?? '').toLowerCase();
++      const f = (name: string, lng: number, lat: number, cc: string, country: string) => ({ geometry: { coordinates: [lng, lat] }, properties: { name, osm_key: 'place', osm_value: 'city', countrycode: cc, country } });
++      return j({ features: q.startsWith('lis') ? [f('Lisbon', -9.1393, 38.7223, 'PT', 'Portugal')] : q.startsWith('bar') ? [f('Barcelona', 2.1686, 41.3874, 'ES', 'Spain')] : q.startsWith('bru') ? [f('Brussels', 4.3528, 50.8466, 'BE', 'Belgium')] : [] });
++    }
++    if (url.hostname === 'serpapi.com') {
++      const q = url.searchParams; const engine = q.get('engine')!;
++      calls.push({ engine, q });
++      if (engine === 'google_travel_explore') return j({ search_metadata: { google_travel_explore_url: 'https://www.google.com/travel/explore?tfs=x' }, destinations: [
++        { name: 'Lisbon', country: 'Portugal', destination_airport: { code: 'LIS' }, gps_coordinates: { latitude: 38.7223, longitude: -9.1393 }, flight_price: 89, hotel_price: 58, start_date: q.get('outbound_date'), end_date: q.get('return_date'), flight_duration: 165, number_of_stops: 0, airline: 'Ryanair', thumbnail: 'https://img.example/lis.jpg', link: 'https://www.google.com/travel/explore?d=LIS' },
++        { name: 'Barcelona', country: 'Spain', destination_airport: { code: 'BCN' }, gps_coordinates: { latitude: 41.3874, longitude: 2.1686 }, flight_price: 140, hotel_price: 95, flight_duration: 125, number_of_stops: 0, airline: 'Vueling' },
++        { name: 'Brussels', country: 'Belgium', destination_airport: { code: 'BRU' }, flight_price: 1 },
++        { name: 'Unpriced', country: 'X', destination_airport: { code: 'UNP' } },
++      ] });
++      if (engine === 'google_hotels') return j({ search_metadata: { google_hotels_url: 'https://www.google.com/travel/hotels/Lisbon' }, properties: [
++        { name: 'Lisbon Central Hostel', type: 'hotel', link: 'https://hostel.example', gps_coordinates: { latitude: 38.715, longitude: -9.14 }, total_rate: { extracted_lowest: 96 }, overall_rating: 4.5, property_token: 'h1' },
++        { name: 'Hotel Baixa', type: 'hotel', link: 'https://baixa.example', gps_coordinates: { latitude: 38.711, longitude: -9.137 }, total_rate: { extracted_lowest: 210 }, overall_rating: 4.7, extracted_hotel_class: 4, property_token: 'h2', amenities: ['Free cancellation'] },
++      ] });
++      if (engine === 'google_flights') {
++        const tok = q.get('departure_token');
++        if (tok) return j({ best_flights: [{ flights: [tok === 'crl' ? seg('LIS', 'CRL', '2027-03-29 18:00', '2027-03-29 21:45', 'FR 7311', 'Ryanair', 165) : seg('LIS', 'BRU', '2027-03-29 17:00', '2027-03-29 20:45', 'TP 1209', 'TAP', 165)], total_duration: 165, price: tok === 'crl' ? 89 : 260, booking_token: `b_${tok}` }] });
++        return j({ search_metadata: { id: 'f1', google_flights_url: 'https://www.google.com/travel/flights?tfs=lis' },
++          best_flights: [{ flights: [seg('BRU', 'LIS', '2027-03-27 10:00', '2027-03-27 11:45', 'TP 1204', 'TAP', 165)], total_duration: 165, price: 260, departure_token: 'bru' }],
++          other_flights: [{ flights: [seg('CRL', 'LIS', '2027-03-27 07:00', '2027-03-27 08:45', 'FR 7310', 'Ryanair', 165)], total_duration: 165, price: 89, departure_token: 'crl' }] });
++      }
++    }
++    return new Response('unexpected ' + url, { status: 599 });
++  }) as typeof fetch;
++}
++
++let h: Harness; let c: Client;
++before(async () => {
++  setFetch(net());
++  h = await startHarness({}, () => {
++    const geo = new FreeGeo({ airportsUrl: 'unused', dataDir: '/nonexistent', photonUrl: 'https://photon.example', airports: AIRPORTS, tzLookup });
++    const quota = async () => {};
++    return { flights: new SerpApiFlights('serp_test', geo, quota), stays: [new SerpApiHotels('serp_test', quota)], explore: new SerpApiExplore('serp_test', quota), holidays: new NagerHolidays('https://date.nager.at/api/v3') };
++  });
++});
++after(async () => { setFetch((...a) => fetch(...a)); await h.close(); });
++
++test('dashboard is public: place search and holiday windows without an account, no paid searches', async () => {
++  const anon = h.client();
++  const home = await fetch(h.base + '/');
++  assert.equal(home.status, 200, 'the dashboard page loads without signing in');
++  const places = await anon.get('/api/places?q=Brussels');
++  assert.equal(places.status, 200); assert.ok(places.body.some((p: any) => p.name === 'Brussels' && p.airports.some((a: any) => a.iata === 'BRU')));
++  const w = await anon.get('/api/public/windows?country=BE&months=6');
++  assert.equal(w.status, 200, JSON.stringify(w.body));
++  assert.ok(w.body.windows.some((x: any) => x.label === 'Easter Monday long weekend' && x.leaveDays === 0));
++  assert.ok(w.body.windows.some((x: any) => x.label.startsWith('Ascension Day') && x.needsBridgeDay));
++  assert.equal(calls.length, 0, 'browsing never spends the SerpApi allowance');
++  const denied = await anon.post('/api/ideas', { origin: BRUSSELS });
++  assert.equal(denied.status, 401, 'live prices need an account');
++  assert.equal((await anon.get('/api/trips')).status, 401, 'personal data stays private');
++});
++
++let ideaId: string; let tripId: string;
++test('trip ideas: one Travel Explore search per window from every airport near home, ranked with real prices only', async () => {
++  c = await signUp(h, 'ideas@example.com');
++  await c.put('/api/profile', { homePlace: BRUSSELS, currency: 'EUR', onboardingComplete: true });
++  const r = await c.post('/api/ideas', { origin: BRUSSELS, months: 6, adults: 1, budget: 600, currency: 'EUR' });
++  assert.equal(r.status, 200, JSON.stringify(r.body));
++  ideaId = r.body.ideaId;
++  await h.worker.drain();
++  const g = (await c.get(`/api/ideas/${ideaId}`)).body;
++  assert.equal(g.status, 'complete', JSON.stringify(g));
++  const ex = calls.filter((x) => x.engine === 'google_travel_explore');
++  assert.ok(ex.length >= 1 && ex.length <= 3, `at most IDEA_WINDOWS searches (got ${ex.length})`);
++  assert.equal(ex[0].q.get('departure_id'), 'BRU,CRL', 'home airport plus Charleroi (within 150 km) in ONE search');
++  assert.deepEqual(g.result.airports.map((a: any) => a.iata), ['BRU', 'CRL']);
++  const ideas = g.result.ideas;
++  assert.ok(ideas.length >= 2);
++  assert.ok(ideas.every((i: any) => i.destination.iata !== 'BRU' && i.destination.iata !== 'UNP'), 'home airports and unpriced places are never suggested');
++  assert.equal(ideas[0].destination.iata, 'LIS', 'cheapest good trip first');
++  assert.equal(ideas[0].total, 89 + 58 * ideas[0].nights);
++  assert.ok(ideas[0].window.label.length > 0);
++  assert.ok(g.result.notes.some((n: string) => /Hotel prices are per night/.test(n)));
++  // Another user cannot read someone else's ideas.
++  const other = await signUp(h, 'other@example.com');
++  assert.equal((await other.get(`/api/ideas/${ideaId}`)).status, 404);
++});
++
++test('choosing an idea creates the trip and searches flights from all nearby airports in a single search', async () => {
++  const before = calls.length;
++  const lis = (await c.get(`/api/ideas/${ideaId}`)).body.result.ideas.find((i: any) => i.destination.iata === 'LIS');
++  const r = await c.post(`/api/ideas/${ideaId}/choose`, { index: lis.index });
++  assert.equal(r.status, 200, JSON.stringify(r.body));
++  tripId = r.body.tripId;
++  assert.deepEqual(r.body.started.slice(0, 2), ['flight', 'stay']);
++  await h.worker.drain();
++  const detail = (await c.get(`/api/trips/${tripId}`)).body;
++  assert.equal(detail.trip.startDate, lis.window.start); assert.equal(detail.stops[0].place.iata, 'LIS');
++  const outbound = calls.slice(before).filter((x) => x.engine === 'google_flights' && !x.q.get('departure_token'));
++  assert.equal(outbound.length, 1, 'one outbound search covers BRU and CRL');
++  assert.equal(outbound[0].q.get('departure_id'), 'BRU,CRL');
++  const searches = (await c.get(`/api/trips/${tripId}/searches`)).body;
++  const fs = (await c.get(`/api/searches/${searches.find((s: any) => s.kind === 'flight').id}`)).body;
++  assert.equal(fs.status, 'complete', JSON.stringify(fs.error));
++  // The Charleroi fare is both cheapest and best overall here, so it carries the 'recommended' role.
++  const cheapest = [...fs.offers].sort((a: any, b: any) => a.total.amount - b.total.amount)[0];
++  assert.equal(fs.offers.find((o: any) => o.role === 'recommended').id, cheapest.id, 'cheaper airport wins even after the transfer cost');
++  assert.equal(cheapest.data.offer.slices[0].from, 'CRL', 'the cheaper Charleroi fare is found');
++  assert.ok(fs.result.notes[0].startsWith('Searched 2 airports near you: BRU'), fs.result.notes[0]);
++  assert.ok(cheapest.data.scoring.components.some((x: any) => /Ground transfer CRL/.test(x.label)), 'getting to the farther airport is priced in');
++});
++
++test('Book everything: flights, stays, hostels/Airbnb, car rental, transport, tickets and extras in one checklist', async () => {
++  const r = await c.get(`/api/trips/${tripId}/book`);
++  assert.equal(r.status, 200, JSON.stringify(r.body));
++  const items = r.body.items;
++  const fl = items.find((i: any) => i.section === 'flights');
++  assert.equal(fl.status, 'to_book');
++  assert.ok(fl.options.some((o: any) => o.price.amount === 89 && o.offer.id));
++  const stay = items.find((i: any) => i.section === 'stays');
++  assert.ok(stay.options.some((o: any) => o.title === 'Lisbon Central Hostel' && o.price.amount === 96), JSON.stringify(stay.options.map((o: any) => [o.role, o.title])));
++  assert.ok(stay.links.some((l: any) => l.label === 'Airbnb') && stay.links.some((l: any) => /Hostels/.test(l.label)));
++  const car = items.find((i: any) => i.section === 'car');
++  assert.ok(car.links.some((l: any) => l.url.includes('/cars/LIS/')));
++  assert.match(car.note, /no free price source/);
++  assert.ok(items.some((i: any) => i.section === 'transport' && /Airport LIS/.test(i.title)));
++  assert.ok(items.some((i: any) => i.key === 'extra:insurance'));
++  assert.ok(items.flatMap((i: any) => i.links).every((l: any) => /^https:\/\//.test(l.url)));
++  assert.equal(r.body.totals.cheapest, 89 + 96);
++  // Recording a booking marks the item as booked.
++  await c.post('/api/reservations', { tripId, kind: 'flight', providerName: 'Ryanair', confirmationCode: 'ABC123', startDate: '2027-03-27' });
++  const again = (await c.get(`/api/trips/${tripId}/book`)).body;
++  assert.equal(again.items.find((i: any) => i.section === 'flights').status, 'booked');
++  const other = await signUp(h, 'nosy@example.com');
++  assert.equal((await other.get(`/api/trips/${tripId}/book`)).status, 404, 'checklists are private to the trip owner');
++});
+diff --git a/test/unit/adapters.test.ts b/test/unit/adapters.test.ts
+index 1da2bdb..88e69fe 100644
+--- a/test/unit/adapters.test.ts
++++ b/test/unit/adapters.test.ts
+@@ -93,7 +93,7 @@ test('integration readiness never reports unconfigured services as configured',
+   for (const k of Object.keys(process.env)) if (/DUFFEL|GOOGLE|WHATSAPP|RESEND|ANTHROPIC|BRAVE|BOOKING|OPEN_METEO/.test(k)) delete process.env[k];
+   process.env.NODE_ENV = 'production';
+   const r = integrationReadiness(loadConfig());
+-  const keyless = ['database', 'encryption', 'geo_free', 'osm', 'wikimedia', 'callmebot']; // free services that need no credentials
++  const keyless = ['database', 'encryption', 'geo_free', 'osm', 'wikimedia', 'callmebot', 'holidays']; // free services that need no credentials
+   assert.ok(r.filter((x) => !keyless.includes(x.key)).every((x) => x.status === 'awaiting_credentials' || x.key === 'email' && x.status !== 'configured'), JSON.stringify(r.map((x) => [x.key, x.status])));
+   Object.assign(process.env, saved);
+ });
+diff --git a/test/unit/ideas.test.ts b/test/unit/ideas.test.ts
+new file mode 100644
+index 0000000..9012c3e
+--- /dev/null
++++ b/test/unit/ideas.test.ts
+@@ -0,0 +1,111 @@
++// Unit tests: holiday windows, idea ranking, Travel Explore parsing, booking links, Brevo email.
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { leaveDaysNeeded, pickWindowsToPrice, scoreIdeas, travelWindows } from '../../src/server/domain/windows.ts';
++import { normaliseExplore } from '../../src/server/integrations/serpapi.ts';
++import { carLinks, flightLinks, stayLinks, transportLink } from '../../src/server/services/bookAll.ts';
++import { BrevoMailer, chooseMailer, emailHtml, parseFrom, ResendMailer } from '../../src/server/integrations/messaging.ts';
++import { setFetch } from '../../src/server/integrations/http.ts';
++
++const BE_2027 = [
++  { date: '2027-03-29', name: 'Easter Monday' },
++  { date: '2027-05-01', name: 'Labour Day' },          // Saturday
++  { date: '2027-05-06', name: 'Ascension Day' },       // Thursday
++  { date: '2027-05-17', name: 'Whit Monday' },
++];
++const LW_2027 = [
++  { startDate: '2027-03-27', endDate: '2027-03-29', dayCount: 3, needBridgeDay: false },
++  { startDate: '2027-05-06', endDate: '2027-05-09', dayCount: 4, needBridgeDay: true },
++  { startDate: '2027-05-15', endDate: '2027-05-17', dayCount: 3, needBridgeDay: false },
++];
++
++test('leave days skip weekends and public holidays', () => {
++  const hol = new Set(['2027-05-06']);
++  assert.equal(leaveDaysNeeded('2027-05-06', '2027-05-09', hol), 1, 'Thu holiday, Fri bridge, Sat, Sun → 1 leave day');
++  assert.equal(leaveDaysNeeded('2027-03-27', '2027-03-29', new Set(['2027-03-29'])), 0);
++});
++
++test('travel windows: long weekends labelled with holidays, holiday weeks, sorted by date, inside range', () => {
++  const w = travelWindows({ from: '2027-02-04', until: '2027-06-30', holidays: BE_2027, longWeekends: LW_2027 });
++  const easter = w.find((x) => x.id === '2027-03-27_2027-03-29')!;
++  assert.equal(easter.kind, 'long_weekend'); assert.equal(easter.nights, 2); assert.equal(easter.leaveDays, 0);
++  assert.match(easter.label, /Easter Monday long weekend/);
++  const asc = w.find((x) => x.id === '2027-05-06_2027-05-09')!;
++  assert.equal(asc.leaveDays, 1); assert.equal(asc.needsBridgeDay, true);
++  const week = w.find((x) => x.kind === 'holiday_week' && x.holidays.includes('Ascension Day'))!;
++  assert.equal(week.start, '2027-05-01'); assert.equal(week.end, '2027-05-09'); assert.equal(week.nights, 8);
++  assert.equal(week.leaveDays, 4, 'Mon–Fri minus the Thursday holiday');
++  assert.deepEqual(w.map((x) => x.start), [...w.map((x) => x.start)].sort());
++  assert.ok(w.every((x) => x.start >= '2027-02-04' && x.end <= '2027-06-30'));
++});
++
++test('travel windows fall back to weekends when a country has no holiday data', () => {
++  const w = travelWindows({ from: '2027-02-03', until: '2027-04-30', holidays: [], longWeekends: [] });
++  assert.ok(w.length >= 4);
++  assert.ok(w.every((x) => x.kind === 'weekend' && new Date(`${x.start}T12:00:00Z`).getUTCDay() === 5 && x.nights === 2 && x.leaveDays === 0));
++});
++
++test('windows to price: fewest leave days per night, never overlapping, capped', () => {
++  const w = travelWindows({ from: '2027-02-04', until: '2027-06-30', holidays: BE_2027, longWeekends: LW_2027 });
++  const pick = pickWindowsToPrice(w, 3);
++  assert.equal(pick.length, 3);
++  for (let i = 0; i < pick.length; i++) for (let j = i + 1; j < pick.length; j++) assert.ok(pick[i].end <= pick[j].start || pick[j].end <= pick[i].start, 'no overlap');
++  assert.ok(pick.every((x) => x.leaveDays <= 1));
++});
++
++test('idea scoring: estimated total, budget, weather and stops; cheapest good trip first', () => {
++  const base = { windowId: 'w', nights: 3, flightMinutes: 150, stops: 0, weather: null };
++  const r = scoreIdeas([
++    { ...base, name: 'Lisbon', country: 'Portugal', iata: 'LIS', flightPrice: 95, hotelPerNight: 60, weather: { tempMaxC: 21, precipitationProbability: 10, kind: 'climate' } },
++    { ...base, name: 'Oslo', country: 'Norway', iata: 'OSL', flightPrice: 80, hotelPerNight: 110, weather: { tempMaxC: 3, precipitationProbability: 70, kind: 'climate' } },
++    { ...base, name: 'Dubai', country: 'UAE', iata: 'DXB', flightPrice: 500, hotelPerNight: 90, flightMinutes: 400, stops: 1 },
++    { ...base, name: 'Nowhere', country: '', iata: 'NWH', flightPrice: null, hotelPerNight: 10 },
++  ], 400, 'EUR');
++  assert.equal(r.length, 3, 'unpriced ideas are dropped, never shown with a made-up price');
++  assert.equal(r[0].idea.iata, 'LIS');
++  assert.equal(r[0].total, 95 + 180);
++  assert.equal(r[0].withinBudget, true);
++  const dxb = r.find((x) => x.idea.iata === 'DXB')!;
++  assert.equal(dxb.withinBudget, false); assert.ok(dxb.caveats.some((c) => /Over your EUR 400 budget/.test(c)));
++  assert.ok(r.find((x) => x.idea.iata === 'OSL')!.caveats.some((c) => /Cold/.test(c)));
++});
++
++test('Google Travel Explore results are normalised; https-only links and thumbnails', () => {
++  const d = normaliseExplore({ destinations: [
++    { name: 'Lisbon', country: 'Portugal', destination_airport: { code: 'LIS' }, gps_coordinates: { latitude: 38.72, longitude: -9.14 }, flight_price: 95, hotel_price: 61, start_date: '2027-03-27', end_date: '2027-03-29', flight_duration: 170, number_of_stops: 0, airline: 'TAP', thumbnail: 'https://img.example/lis.jpg', link: 'https://www.google.com/travel/explore?x' },
++    { name: 'Weird', country: '', destination_airport: { code: 'xx' }, thumbnail: 'javascript:alert(1)', link: 'http://insecure' },
++  ] });
++  assert.equal(d[0].iata, 'LIS'); assert.equal(d[0].flightPrice, 95); assert.equal(d[0].hotelPerNight, 61); assert.equal(d[0].flightMinutes, 170);
++  assert.equal(d[1].iata, null); assert.equal(d[1].thumbnail, null); assert.equal(d[1].link, null); assert.equal(d[1].flightPrice, null);
++});
++
++test('booking links are prefilled https URLs for the exact dates and travellers', () => {
++  const all = [...flightLinks('BRU', 'LIS', '2027-03-27', '2027-03-29', 2, 'Brussels'), ...stayLinks('Lisbon', '2027-03-27', '2027-03-29', 2), ...carLinks('LIS', 'Lisbon', '2027-03-27', '2027-03-29'), transportLink('Lisbon', 'Porto')];
++  for (const l of all) assert.match(l.url, /^https:\/\//);
++  assert.ok(all.find((l) => l.label === 'Skyscanner')!.url.includes('/bru/lis/270327/270329/'));
++  assert.ok(all.find((l) => l.label === 'Kayak')!.url.includes('/flights/BRU-LIS/2027-03-27/2027-03-29/2adults'));
++  const hostels = new URL(all.find((l) => l.label.startsWith('Hostels'))!.url);
++  assert.equal(hostels.searchParams.get('checkin'), '2027-03-27'); assert.equal(hostels.searchParams.get('group_adults'), '2'); assert.equal(hostels.searchParams.get('nflt'), 'ht_id=203');
++  assert.ok(all.find((l) => l.label === 'Airbnb')!.url.startsWith('https://www.airbnb.com/s/Lisbon/homes?'));
++  assert.ok(all.find((l) => l.label === 'Kayak car rental')!.url.includes('/cars/LIS/2027-03-27/2027-03-29'));
++});
++
++test('Brevo sends real email from a verified sender; provider chosen by configuration', async () => {
++  assert.deepEqual(parseFrom('Travel Compass <me@gmail.com>'), { name: 'Travel Compass', email: 'me@gmail.com' });
++  assert.deepEqual(parseFrom('me@gmail.com'), { email: 'me@gmail.com' });
++  const sent: any[] = [];
++  setFetch((async (url: any, init: any) => { sent.push({ url: String(url), headers: init.headers, body: JSON.parse(init.body) }); return new Response(JSON.stringify({ messageId: '<1@brevo>' }), { status: 201, headers: { 'Content-Type': 'application/json' } }); }) as typeof fetch);
++  try {
++    const m = new BrevoMailer('xkeysib-test', 'Travel Compass <me@gmail.com>');
++    await m.send({ to: 'friend@example.com', subject: 'Verify your Travel Compass email', text: 'Verify your email: https://app.example/verify-email?token=abc' });
++    assert.equal(sent[0].url, 'https://api.brevo.com/v3/smtp/email');
++    assert.equal(sent[0].headers['api-key'], 'xkeysib-test');
++    assert.deepEqual(sent[0].body.sender, { name: 'Travel Compass', email: 'me@gmail.com' });
++    assert.deepEqual(sent[0].body.to, [{ email: 'friend@example.com' }]);
++    assert.match(sent[0].body.htmlContent, /href="https:\/\/app\.example\/verify-email\?token=abc"/);
++  } finally { setFetch((...a) => fetch(...a)); }
++  assert.ok(chooseMailer({ brevoKey: 'k', resendKey: 'r', from: 'a@b.c', devLog: false }) instanceof BrevoMailer, 'Brevo preferred when set');
++  assert.ok(chooseMailer({ resendKey: 'r', from: 'a@b.c', devLog: false }) instanceof ResendMailer);
++  assert.equal(chooseMailer({ from: 'a@b.c', devLog: false }).configured(), false, 'no provider and no log-only → not configured, so sign-up refuses instead of silently dropping mail');
++  assert.ok(!emailHtml('<script>x</script> https://a.example/?q=1&b=2').includes('<script>'), 'email HTML is escaped');
++});
+-- 
+2.43.0
+

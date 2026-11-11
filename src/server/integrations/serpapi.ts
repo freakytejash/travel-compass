@@ -54,11 +54,7 @@ export class SerpApiFlights implements FlightProvider {
   private key?: string; private geo: FreeGeo; private quota: QuotaGuard; private gl: string;
   constructor(key: string | undefined, geo: FreeGeo, quota: QuotaGuard, gl = 'be') { this.key = key; this.geo = geo; this.quota = quota; this.gl = gl; }
   configured() { return !!this.key; }
-  /** Google Flights accepts several departure/arrival airports in one search (comma-separated), so one search covers all nearby airports. */
-  multiAirport = true;
   searchPlaces(query: string, near?: { lat: number; lng: number; radiusM: number }) { return this.geo.searchPlaces(query, near); }
-  async nearbyAirports(lat: number, lng: number, radiusKm: number, max: number) { return (await this.geo.nearbyAirports(lat, lng, radiusKm, max)).map((a) => ({ iata: a.iata, name: a.name, lat: a.lat, lng: a.lng })); }
-  async airportInfo(iata: string) { const a = await this.geo.airport(iata); return a ? { iata: a.iata, name: a.name, lat: a.lat, lng: a.lng, city: a.city, country: a.country } : null; }
 
   private async call(params: Record<string, string>, op: string, userId?: string | null): Promise<any> {
     if (!this.key) throw new NotConfiguredError('SerpApi', ['SERPAPI_API_KEY']);
@@ -232,39 +228,4 @@ export function normaliseSerpHotels(r: any, req: Pick<StaySearchRequest, 'lat' |
     });
   }
   return out;
-}
-
-export interface ExploreDestination {
-  name: string; country: string; iata: string | null; lat: number | null; lng: number | null;
-  flightPrice: number | null; hotelPerNight: number | null; startDate: string | null; endDate: string | null;
-  flightMinutes: number | null; stops: number | null; airline: string | null; thumbnail: string | null; link: string | null;
-}
-
-/** Google Travel Explore via SerpApi: cheapest destinations from one or more departure airports for given dates (one search). */
-export class SerpApiExplore {
-  name = 'serpapi_google_travel_explore';
-  private key?: string; private quota: QuotaGuard; private gl: string;
-  constructor(key: string | undefined, quota: QuotaGuard, gl = 'be') { this.key = key; this.quota = quota; this.gl = gl; }
-  configured() { return !!this.key; }
-  async explore(req: { departureIds: string[]; outboundDate: string; returnDate: string; currency: string; adults: number; userId?: string | null; maxPrice?: number | null }): Promise<{ destinations: ExploreDestination[]; searchUrl: string | null }> {
-    if (!this.key) throw new NotConfiguredError('SerpApi', ['SERPAPI_API_KEY']);
-    await this.quota('serpapi');
-    const qs = new URLSearchParams({ engine: 'google_travel_explore', departure_id: req.departureIds.join(','), outbound_date: req.outboundDate, return_date: req.returnDate, type: '1', currency: req.currency, adults: String(req.adults), hl: 'en', gl: this.gl, api_key: this.key });
-    if (req.maxPrice) qs.set('max_price', String(Math.round(req.maxPrice)));
-    const r = await requestJson<any>(`${BASE}?${qs}`, { provider: 'serpapi', operation: 'travel_explore', timeoutMs: 60000, retries: 1, userId: req.userId });
-    if (r.error && !/hasn't returned any results/i.test(r.error)) throw new ProviderError('serpapi', String(r.error).slice(0, 200), 200, false);
-    return { destinations: normaliseExplore(r), searchUrl: typeof r.search_metadata?.google_travel_explore_url === 'string' ? r.search_metadata.google_travel_explore_url : null };
-  }
-}
-
-export function normaliseExplore(r: any): ExploreDestination[] {
-  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-  const https = (v: unknown) => (typeof v === 'string' && v.startsWith('https://') ? v : null);
-  return (r.destinations ?? []).filter((d: any) => d?.name).map((d: any) => ({
-    name: String(d.name), country: String(d.country ?? ''), iata: /^[A-Z]{3}$/.test(d.destination_airport?.code ?? '') ? d.destination_airport.code : null,
-    lat: num(d.gps_coordinates?.latitude), lng: num(d.gps_coordinates?.longitude),
-    flightPrice: num(d.flight_price), hotelPerNight: num(d.hotel_price), startDate: d.start_date ?? null, endDate: d.end_date ?? null,
-    flightMinutes: num(d.flight_duration), stops: num(d.number_of_stops), airline: d.airline ? String(d.airline) : null,
-    thumbnail: https(d.thumbnail), link: https(d.link),
-  }));
 }

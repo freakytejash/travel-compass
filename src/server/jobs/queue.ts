@@ -9,8 +9,6 @@ export interface Job { id: number; queue: string; payload: any; attempts: number
 export class JobQueue {
   private db: Pool; private now: () => Date;
   readonly workerId = `${os.hostname()}:${process.pid}`;
-  /** Called after every enqueue so an idle in-process worker wakes immediately. */
-  onEnqueue: (() => void) | null = null;
   constructor(db: Pool, now: () => Date) { this.db = db; this.now = now; }
 
   /** Enqueue a job. With a dedupe key, an existing active job is reused (returns its id). */
@@ -24,7 +22,6 @@ export class JobQueue {
        RETURNING id`,
       [queue, payload ?? {}, o.runAt ?? this.now(), o.dedupeKey ?? null, o.maxAttempts ?? 5],
     );
-    this.onEnqueue?.();
     return r.rows[0].id;
   }
 
@@ -60,10 +57,4 @@ export class JobQueue {
     await this.db.query(`UPDATE jobs SET status='dead', finished_at=now(), locked_at=NULL, last_error=$2 WHERE id=$1`, [job.id, err.message.slice(0, 1000)]);
     return 'dead';
   }
-}
-
-/** Earliest time a queued job becomes due, or null when the queue is empty. */
-export async function nextDueAt(db: Pool): Promise<Date | null> {
-  const r = await db.query<{ t: Date | null }>(`SELECT min(run_at) AS t FROM jobs WHERE status='queued'`);
-  return r.rows[0]?.t ?? null;
 }

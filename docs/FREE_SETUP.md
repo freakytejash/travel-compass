@@ -77,7 +77,7 @@ A typical trip (destination ideas, flights, flexible dates, hotels, booking) use
   2. Leave the consent screen in **Testing**, add yourself as a test user, and enable the Gmail API.
   3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. This also turns on "Continue with Google".
   - Google expires refresh tokens for testing-mode apps after 7 days, so reconnect weekly. Publishing the app would require Google's paid security review.
-- **Real emails:** use Brevo's free plan (300/day). Verify your own address as a sender, set `BREVO_API_KEY` and `EMAIL_FROM`, and set `EMAIL_LOG_ONLY=false` (steps in DEPLOY_FREE.md). Resend also works, but only with a domain you own verified in Resend.
+- **Real emails:** use Resend's free plan (3,000/month, one domain). Verify a domain you own, set `RESEND_API_KEY` and `EMAIL_FROM`, and set `EMAIL_LOG_ONLY=false`.
 - **Use it from your phone:** free Tailscale or Cloudflare Tunnel. Set `APP_URL` to the tunnel's https address and add it to the Google OAuth redirect URIs.
 - **Always on:** an old laptop or Raspberry Pi. Oracle Cloud's Always Free tier also works; since June 2026 the Arm VM allowance is 2 OCPU / 12 GB, it needs a card for identity checks, and capacity is often unavailable.
 

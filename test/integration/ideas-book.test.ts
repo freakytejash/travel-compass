@@ -5,77 +5,22 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startHarness, signUp, type Harness, type Client } from '../helpers/harness.ts';
 import { setFetch } from '../../src/server/integrations/http.ts';
-import { FreeGeo, type Airport } from '../../src/server/integrations/freegeo.ts';
+import { FreeGeo } from '../../src/server/integrations/freegeo.ts';
 import { SerpApiExplore, SerpApiFlights, SerpApiHotels } from '../../src/server/integrations/serpapi.ts';
 import { NagerHolidays } from '../../src/server/integrations/holidays.ts';
+import { BrevoMailer } from '../../src/server/integrations/messaging.ts';
 import type { Place } from '../../src/shared/types.ts';
-
-const AIRPORTS: Airport[] = [
-  { iata: 'BRU', name: 'Brussels Airport', city: 'Brussels', country: 'BE', lat: 50.901, lng: 4.484, size: 'large' },
-  { iata: 'CRL', name: 'Brussels South Charleroi Airport', city: 'Charleroi', country: 'BE', lat: 50.459, lng: 4.453, size: 'medium' },
-  { iata: 'LIS', name: 'Humberto Delgado Airport', city: 'Lisbon', country: 'PT', lat: 38.774, lng: -9.134, size: 'large' },
-  { iata: 'BCN', name: 'Barcelona El Prat', city: 'Barcelona', country: 'ES', lat: 41.297, lng: 2.083, size: 'large' },
-];
-const tzLookup = async (lat: number) => (lat < 40 ? 'Europe/Lisbon' : lat < 45 ? 'Europe/Madrid' : 'Europe/Brussels');
-const BRUSSELS: Place = { name: 'Brussels', kind: 'city', lat: 50.8466, lng: 4.3528, countryCode: 'BE', timeZone: 'Europe/Brussels', iata: 'BRU', cityName: 'Brussels', airports: [{ iata: 'BRU', name: 'Brussels Airport', lat: 50.901, lng: 4.484 }], source: 'photon' };
-
-const calls: { engine: string; q: URLSearchParams }[] = [];
-let nagerCalls = 0;
-const seg = (from: string, to: string, d: string, a: string, fn: string, airline: string, dur: number) => ({ departure_airport: { id: from, time: d }, arrival_airport: { id: to, time: a }, duration: dur, airline, flight_number: fn, extensions: [] });
-
-function net(): typeof fetch {
-  return (async (input: any) => {
-    const url = new URL(String(input));
-    const j = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
-    if (url.hostname === 'date.nager.at') {
-      nagerCalls++;
-      if (url.pathname.endsWith('/PublicHolidays/2027/BE')) return j([
-        { date: '2027-03-29', name: 'Easter Monday', localName: 'Paasmaandag', countryCode: 'BE', global: true },
-        { date: '2027-05-06', name: 'Ascension Day', localName: 'O.L.H. Hemelvaart', countryCode: 'BE', global: true },
-      ]);
-      if (url.pathname.endsWith('/LongWeekend/2027/BE')) return j([
-        { startDate: '2027-03-27', endDate: '2027-03-29', dayCount: 3, needBridgeDay: false },
-        { startDate: '2027-05-06', endDate: '2027-05-09', dayCount: 4, needBridgeDay: true },
-      ]);
-      return new Response('', { status: 404 });
-    }
-    if (url.hostname === 'photon.example') {
-      const q = (url.searchParams.get('q') ?? '').toLowerCase();
-      const f = (name: string, lng: number, lat: number, cc: string, country: string) => ({ geometry: { coordinates: [lng, lat] }, properties: { name, osm_key: 'place', osm_value: 'city', countrycode: cc, country } });
-      return j({ features: q.startsWith('lis') ? [f('Lisbon', -9.1393, 38.7223, 'PT', 'Portugal')] : q.startsWith('bar') ? [f('Barcelona', 2.1686, 41.3874, 'ES', 'Spain')] : q.startsWith('bru') ? [f('Brussels', 4.3528, 50.8466, 'BE', 'Belgium')] : [] });
-    }
-    if (url.hostname === 'serpapi.com') {
-      const q = url.searchParams; const engine = q.get('engine')!;
-      calls.push({ engine, q });
-      if (engine === 'google_travel_explore') return j({ search_metadata: { google_travel_explore_url: 'https://www.google.com/travel/explore?tfs=x' }, destinations: [
-        { name: 'Lisbon', country: 'Portugal', destination_airport: { code: 'LIS' }, gps_coordinates: { latitude: 38.7223, longitude: -9.1393 }, flight_price: 89, hotel_price: 58, start_date: q.get('outbound_date'), end_date: q.get('return_date'), flight_duration: 165, number_of_stops: 0, airline: 'Ryanair', thumbnail: 'https://img.example/lis.jpg', link: 'https://www.google.com/travel/explore?d=LIS' },
-        { name: 'Barcelona', country: 'Spain', destination_airport: { code: 'BCN' }, gps_coordinates: { latitude: 41.3874, longitude: 2.1686 }, flight_price: 140, hotel_price: 95, flight_duration: 125, number_of_stops: 0, airline: 'Vueling' },
-        { name: 'Brussels', country: 'Belgium', destination_airport: { code: 'BRU' }, flight_price: 1 },
-        { name: 'Unpriced', country: 'X', destination_airport: { code: 'UNP' } },
-      ] });
-      if (engine === 'google_hotels') return j({ search_metadata: { google_hotels_url: 'https://www.google.com/travel/hotels/Lisbon' }, properties: [
-        { name: 'Lisbon Central Hostel', type: 'hotel', link: 'https://hostel.example', gps_coordinates: { latitude: 38.715, longitude: -9.14 }, total_rate: { extracted_lowest: 96 }, overall_rating: 4.5, property_token: 'h1' },
-        { name: 'Hotel Baixa', type: 'hotel', link: 'https://baixa.example', gps_coordinates: { latitude: 38.711, longitude: -9.137 }, total_rate: { extracted_lowest: 210 }, overall_rating: 4.7, extracted_hotel_class: 4, property_token: 'h2', amenities: ['Free cancellation'] },
-      ] });
-      if (engine === 'google_flights') {
-        const tok = q.get('departure_token');
-        if (tok) return j({ best_flights: [{ flights: [tok === 'crl' ? seg('LIS', 'CRL', '2027-03-29 18:00', '2027-03-29 21:45', 'FR 7311', 'Ryanair', 165) : seg('LIS', 'BRU', '2027-03-29 17:00', '2027-03-29 20:45', 'TP 1209', 'TAP', 165)], total_duration: 165, price: tok === 'crl' ? 89 : 260, booking_token: `b_${tok}` }] });
-        return j({ search_metadata: { id: 'f1', google_flights_url: 'https://www.google.com/travel/flights?tfs=lis' },
-          best_flights: [{ flights: [seg('BRU', 'LIS', '2027-03-27 10:00', '2027-03-27 11:45', 'TP 1204', 'TAP', 165)], total_duration: 165, price: 260, departure_token: 'bru' }],
-          other_flights: [{ flights: [seg('CRL', 'LIS', '2027-03-27 07:00', '2027-03-27 08:45', 'FR 7310', 'Ryanair', 165)], total_duration: 165, price: 89, departure_token: 'crl' }] });
-      }
-    }
-    return new Response('unexpected ' + url, { status: 599 });
-  }) as typeof fetch;
-}
+import { AIRPORTS, BRUSSELS, brevoSent, calls, net, sim, tzLookup } from '../helpers/simnet.ts';
 
 let h: Harness; let c: Client;
 before(async () => {
   setFetch(net());
-  h = await startHarness({}, () => {
+  h = await startHarness({ SERPAPI_API_KEY: 'serp_test', BREVO_API_KEY: 'xkeysib-test', EMAIL_FROM: 'Travel Compass <me@example.com>' }, (m) => {
     const geo = new FreeGeo({ airportsUrl: 'unused', dataDir: '/nonexistent', photonUrl: 'https://photon.example', airports: AIRPORTS, tzLookup });
     const quota = async () => {};
-    return { flights: new SerpApiFlights('serp_test', geo, quota), stays: [new SerpApiHotels('serp_test', quota)], explore: new SerpApiExplore('serp_test', quota), holidays: new NagerHolidays('https://date.nager.at/api/v3') };
+    // Real Brevo adapter on the simulated network; copies kept so the sign-up helper can read links.
+    const mailer = new (class extends BrevoMailer { override async send(x: any) { await super.send(x); m.mailer.outbox.push(x); } })('xkeysib-test', 'Travel Compass <me@example.com>');
+    return { flights: new SerpApiFlights('serp_test', geo, quota), stays: [new SerpApiHotels('serp_test', quota)], explore: new SerpApiExplore('serp_test', quota), holidays: new NagerHolidays('https://date.nager.at/api/v3'), mailer };
   });
 });
 after(async () => { setFetch((...a) => fetch(...a)); await h.close(); });
@@ -169,4 +114,82 @@ test('Book everything: flights, stays, hostels/Airbnb, car rental, transport, ti
   assert.equal(again.items.find((i: any) => i.section === 'flights').status, 'booked');
   const other = await signUp(h, 'nosy@example.com');
   assert.equal((await other.get(`/api/trips/${tripId}/book`)).status, 404, 'checklists are private to the trip owner');
+});
+
+test('a return date before the departure date is a clear 400, not a server error', async () => {
+  const r = await c.post('/api/trips', { title: 'Backwards', origin: BRUSSELS, adults: 1, startDate: '2027-12-17', endDate: '2027-11-27', stops: [] });
+  assert.equal(r.status, 400, JSON.stringify(r.body));
+  assert.match(r.body.error.message, /return date is before the departure date/);
+});
+
+
+test('sign-up email goes through Brevo to the address typed, with a working verification link', async () => {
+  const anon = h.client();
+  const r = await anon.post('/api/auth/register', { email: 'tejash@example.com', password: 'correct horse battery', displayName: 'Tejash' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const mail = brevoSent.find((m) => m.to[0].email === 'tejash@example.com');
+  assert.ok(mail, 'Brevo was asked to send the verification email');
+  assert.deepEqual(mail.sender, { name: 'Travel Compass', email: 'me@example.com' });
+  const link = /https?:\/\/\S+verify-email\S+/.exec(mail.textContent)![0];
+  const v = await anon.post('/api/auth/verify-email', { token: new URL(link).searchParams.get('token') });
+  assert.equal(v.status, 200, JSON.stringify(v.body));
+});
+
+test('your journey: trip from Charleroi → Suggest destinations (1 search, no AI) → choose → flights + stays → Book everything → flexible dates', async () => {
+  const CRL: Place = { name: 'Brussels South Charleroi Airport (CRL)', kind: 'airport', iata: 'CRL', lat: 50.459, lng: 4.453, countryCode: 'BE', timeZone: 'Europe/Brussels', cityName: 'Charleroi', source: 'ourairports' };
+  const t = await c.post('/api/trips', { title: 'New trip', origin: CRL, adults: 1, startDate: '2027-12-17', endDate: '2027-12-27', flexDays: 3, budgetTotal: 300, stops: [] });
+  assert.equal(t.status, 200, JSON.stringify(t.body));
+  const id = t.body.id;
+  const before = calls.length;
+  const s = await c.post(`/api/trips/${id}/searches`, { kind: 'destinations' });
+  assert.equal(s.status, 200, JSON.stringify(s.body));
+  await h.worker.drain();
+  const d = (await c.get(`/api/searches/${s.body.searchId}`)).body;
+  assert.equal(d.status, 'complete', d.error);
+  const used = calls.slice(before);
+  assert.equal(used.length, 1, 'one Travel Explore search, nothing else');
+  assert.equal(used[0].engine, 'google_travel_explore');
+  assert.ok(used[0].q.get('departure_id')!.split(',').includes('CRL'));
+  const lis = d.result.destinations.find((x: any) => x.place.airports?.[0]?.iata === 'LIS');
+  assert.ok(lis, JSON.stringify(d.result.destinations.map((x: any) => x.place.name)));
+  assert.equal(lis.flight.amount, 89); assert.equal(lis.stay.amount, 58 * 10);
+  // Choose it (what the button does), then search flights and stays.
+  const trip = (await c.get(`/api/trips/${id}`)).body.trip;
+  const p = await c.patch(`/api/trips/${id}`, { version: trip.version, changes: { title: `Trip to ${lis.place.name}`, stops: [{ place: lis.place, arriveDate: trip.startDate, departDate: trip.endDate }] } });
+  assert.equal(p.status, 200, JSON.stringify(p.body));
+  for (const kind of ['flight', 'stay']) assert.equal((await c.post(`/api/trips/${id}/searches`, { kind })).status, 200);
+  await h.worker.drain();
+  const book = (await c.get(`/api/trips/${id}/book`)).body;
+  assert.equal(book.items.find((i: any) => i.section === 'flights').status, 'to_book');
+  assert.equal(book.items.find((i: any) => i.section === 'stays').status, 'to_book');
+  // Flexible dates on the same trip.
+  const f = await c.post(`/api/trips/${id}/searches`, { kind: 'flex' });
+  assert.equal(f.status, 200, JSON.stringify(f.body));
+  await h.worker.drain();
+  const fx = (await c.get(`/api/searches/${f.body.searchId}`)).body;
+  assert.ok(['complete', 'partial'].includes(fx.status), fx.error);
+});
+
+test('failures name the service and the setting to fix — no more "a travel data service did not respond"', async () => {
+  sim.serpStatus = 401;
+  try {
+    const r = await c.post('/api/ideas', { origin: BRUSSELS, months: 3 });
+    await h.worker.drain();
+    const g = (await c.get(`/api/ideas/${r.body.ideaId}`)).body;
+    assert.equal(g.status, 'failed');
+    assert.match(g.error, /SerpApi.*rejected the request \(HTTP 401\).*SERPAPI_API_KEY/);
+  } finally { sim.serpStatus = 200; }
+});
+
+test('admin self-test reports each live service, and can send a real test email', async () => {
+  const admin = await signUp(h, 'admin@example.com');
+  assert.equal((await c.post('/api/admin/selftest', {})).status, 404, 'admins only (hidden from others)');
+  const r = await admin.post('/api/admin/selftest', { sendEmail: true });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const by = Object.fromEntries(r.body.results.map((x: any) => [x.key, x]));
+  for (const k of ['database', 'places', 'nearby', 'holidays', 'weather', 'serpapi', 'email']) assert.equal(by[k].status, 'ok', `${k}: ${by[k].detail}`);
+  assert.match(by.serpapi.detail, /searches left this month: 231/);
+  assert.equal(by.flights.status, 'skipped', 'no SerpApi search unless asked');
+  assert.ok(brevoSent.some((m) => m.to[0].email === 'admin@example.com' && /test email/i.test(m.subject)));
+  assert.ok(!JSON.stringify(r.body).includes('serp_test') && !JSON.stringify(r.body).includes('xkeysib'), 'keys never shown');
 });
