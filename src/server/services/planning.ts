@@ -10,7 +10,7 @@ import { scheduleDay, windowsForDate, type Candidate, type DayInput, type DayWea
 import { validateItems, sanitiseExternalText } from '../domain/planQuality.ts';
 import { addDays, addMinutesLocal, dateRange, haversineKm, toLocal } from '../domain/time.ts';
 import { airportBuffer } from '../domain/reminders.ts';
-import { mapLimit, NotConfiguredError } from '../integrations/http.ts';
+import { mapLimit, NotConfiguredError, explainFailure } from '../integrations/http.ts';
 import type { PlaceResult } from '../integrations/types.ts';
 import type { FlightOffer, ItineraryItem, Pace, SourceRef, Venue } from '../../shared/types.ts';
 import { getProfile, type Profile } from './profile.ts';
@@ -324,7 +324,7 @@ export async function runPlanJob(ctx: AppContext, p: { userId: string; tripId: s
       }
     } catch (e) {
       await recordError(ctx, 'plan.research', e, { tripId: p.tripId, stop: stop.place.name });
-      failures.push(`${stop.place.name}: ${e instanceof NotConfiguredError ? 'service not available' : 'research service did not respond'}`);
+      failures.push(`${stop.place.name}: ${explainFailure(e, 'research service did not respond')}`);
       continue; // keep existing days for this stop untouched
     }
     if (!research.attractions.length && !research.restaurants.length) { failures.push(`${stop.place.name}: no venues returned`); continue; }

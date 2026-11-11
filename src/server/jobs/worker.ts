@@ -2,12 +2,13 @@
 import type { AppContext } from '../context.ts';
 import { recordError } from '../context.ts';
 import { log } from '../log.ts';
-import { NotConfiguredError, ProviderError, QuotaExceededError } from '../integrations/http.ts';
+import { NotConfiguredError, ProviderError, QuotaExceededError, explainFailure } from '../integrations/http.ts';
 import { AiBudgetExceeded } from '../integrations/ai.ts';
 import { HttpError } from '../http/core.ts';
-import type { Job } from './queue.ts';
+import { nextDueAt, type Job } from './queue.ts';
 import { failSearch, runDestinationSearch, runFlexSearch, runFlightSearch, runStaySearch } from '../services/searches.ts';
 import { runPlanJob } from '../services/planning.ts';
+import { failIdeas, runIdeas } from '../services/ideas.ts';
 import { pollTelegram, sendNotificationJob, scheduleTripNotifications } from '../services/notifications.ts';
 import { gmailSyncJob } from '../services/reservations.ts';
 
@@ -18,6 +19,7 @@ export const handlers: Record<string, JobHandler> = {
   'search.stay': (c, p) => runStaySearch(c, p.searchId, p.userId, p.tripId),
   'search.flex': (c, p) => runFlexSearch(c, p.searchId, p.userId, p.tripId),
   'search.destinations': (c, p) => runDestinationSearch(c, p.searchId, p.userId, p.tripId),
+  'ideas.run': (c, p) => runIdeas(c, p.ideaId, p.userId),
   'plan.generate': (c, p) => runPlanJob(c, p),
   'notify.send': (c, p) => sendNotificationJob(c, p),
   'notify.reschedule': (c, p) => scheduleTripNotifications(c, p.userId, p.tripId),
@@ -48,9 +50,10 @@ export async function processJob(ctx: AppContext, job: Job) {
 async function onDead(ctx: AppContext, job: Job, e: Error) {
   const p = job.payload ?? {};
   if (job.queue.startsWith('search.') && p.searchId) await failSearch(ctx, p.searchId, e);
+  if (job.queue === 'ideas.run' && p.ideaId) await failIdeas(ctx, p.ideaId, e);
   if (job.queue === 'plan.generate' && p.tripId) {
     await ctx.db.query(`UPDATE trips SET plan_status=CASE WHEN EXISTS (SELECT 1 FROM itinerary_days WHERE trip_id=$1) THEN 'incomplete' ELSE 'failed' END,
-      plan_message=$2 WHERE id=$1 AND plan_status='generating'`, [p.tripId, e instanceof NotConfiguredError ? 'Live planning is not available yet. Your saved trip is unchanged.' : e instanceof AiBudgetExceeded ? 'Daily planning limit reached. Your saved trip is unchanged; try again tomorrow.' : 'Planning services did not respond. Your saved trip is unchanged — please retry.']);
+      plan_message=$2 WHERE id=$1 AND plan_status='generating'`, [p.tripId, e instanceof AiBudgetExceeded ? 'Daily planning limit reached. Your saved trip is unchanged; try again tomorrow.' : `${explainFailure(e, 'Planning services did not respond.')} Your saved trip is unchanged.`]);
   }
 }
 
@@ -75,7 +78,8 @@ export async function housekeeping(ctx: AppContext) {
 }
 
 export class Worker {
-  private ctx: AppContext; private running = false; private timer?: NodeJS.Timeout; private active = 0; private lastPoll = 0;
+  private ctx: AppContext; private running = false; private timer?: NodeJS.Timeout; private active = 0; private lastPoll = 0; private lastHousekeeping = '';
+  private tickFn: (() => Promise<void>) | null = null;
   private concurrency: number;
   constructor(ctx: AppContext, concurrency = 4) { this.ctx = ctx; this.concurrency = concurrency; }
   start() {
@@ -86,24 +90,57 @@ export class Worker {
       try {
         // Scheduler: one housekeeping job per hour across all instances (dedupe key).
         const hour = this.ctx.now().toISOString().slice(0, 13);
-        await this.ctx.jobs.enqueue('housekeeping', {}, { dedupeKey: `housekeeping:${hour}`, maxAttempts: 2 });
+        if (hour !== this.lastHousekeeping) {
+          await this.ctx.jobs.enqueue('housekeeping', {}, { dedupeKey: `housekeeping:${hour}`, maxAttempts: 2 });
+          this.lastHousekeeping = hour;
+        }
         if (this.ctx.cfg.telegram.mode === 'polling' && this.ctx.providers.telegram?.configured() && Date.now() - this.lastPoll > 3000) {
           this.lastPoll = Date.now();
           await pollTelegram(this.ctx).catch((e) => log.warn('telegram poll failed', { error: (e as Error).message }));
         }
         const free = this.concurrency - this.active;
+        let claimed = 0;
         if (free > 0) {
           const jobs = await this.ctx.jobs.claim(free);
-          for (const j of jobs) { this.active++; processJob(this.ctx, j).finally(() => { this.active--; }); }
+          claimed = jobs.length;
+          for (const j of jobs) { this.active++; processJob(this.ctx, j).finally(() => { this.active--; this.nudge(); }); }
         }
-      } catch (e) { log.error('worker tick failed', { error: (e as Error).message }); }
-      if (this.running) this.timer = setTimeout(tick, 1000);
+        delay = await this.idleDelay(claimed);
+      } catch (e) { log.error('worker tick failed', { error: (e as Error).message }); delay = 5000; }
+      if (this.running) this.timer = setTimeout(tick, delay);
     };
+    let delay = 1000;
+    this.tickFn = tick;
+    // Wake straight away when this process enqueues work (web requests in the same process).
+    this.ctx.jobs.onEnqueue = () => this.nudge();
     void tick();
     log.info('worker started', { id: this.ctx.jobs.workerId });
   }
+  /**
+   * How long to wait before the next check. By default every second. With WORKER_IDLE_MAX_SECONDS set (e.g. on
+   * free hosting with a scale-to-zero database), an idle worker sleeps until the next job is due, so the database
+   * is not kept awake by polling.
+   */
+  private async idleDelay(claimed: number): Promise<number> {
+    const max = this.ctx.cfg.workerIdleMaxSeconds * 1000;
+    if (max <= 1000 || claimed > 0 || this.active > 0) return 1000;
+    if (this.ctx.cfg.telegram.mode === 'polling' && this.ctx.providers.telegram?.configured()) return 3000;
+    const next = await nextDueAt(this.ctx.db);
+    const nextHour = new Date(this.ctx.now()); nextHour.setUTCMinutes(60, 0, 0);
+    const until = Math.min(next ? next.getTime() : Infinity, nextHour.getTime()) - this.ctx.now().getTime();
+    return Math.max(1000, Math.min(max, until + 500));
+  }
+
+  /** Re-check soon (used when work is enqueued or a job finishes). */
+  nudge() {
+    if (!this.running || !this.tickFn) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(this.tickFn, 200);
+  }
+
   async stop() {
     this.running = false;
+    this.ctx.jobs.onEnqueue = null;
     if (this.timer) clearTimeout(this.timer);
     const deadline = Date.now() + 15000;
     while (this.active > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));

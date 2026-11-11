@@ -21,6 +21,11 @@ const server = http.createServer(createApp(ctx));
 server.headersTimeout = 30000; server.requestTimeout = 60000;
 const worker = cfg.runWorkerInProcess ? new Worker(ctx) : null;
 worker?.start();
+// With a public https address, register the Telegram webhook automatically (an incoming message wakes a sleeping host).
+if (cfg.telegram.mode === 'webhook' && ctx.providers.telegram?.configured() && cfg.appUrl.startsWith('https://')) {
+  (ctx.providers.telegram as unknown as { setWebhook(u: string): Promise<unknown> }).setWebhook(`${cfg.appUrl}/api/webhooks/telegram`)
+    .then(() => log.info('telegram webhook registered')).catch((e: Error) => log.warn('telegram webhook registration failed', { error: e.message }));
+}
 server.listen(cfg.port, () => log.info('Travel Compass listening', { port: cfg.port, env: cfg.env }));
 
 async function shutdown(sig: string) {

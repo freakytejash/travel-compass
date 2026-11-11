@@ -4,12 +4,14 @@ import { BookingDemand } from './booking.ts';
 import { DuffelFlights, DuffelLinks, DuffelStays } from './duffel.ts';
 import { configureOpenMeteoTz, FreeGeo } from './freegeo.ts';
 import { GooglePlaces, GoogleRoutes } from './google.ts';
-import { ResendMailer, WhatsAppCloud } from './messaging.ts';
+import { chooseMailer, WhatsAppCloud } from './messaging.ts';
 import { OpenAiCompatAi } from './openaiCompat.ts';
 import { OsmPlaces } from './osm.ts';
 import { BraveResearch } from './research.ts';
-import { SerpApiFlights, SerpApiHotels, type QuotaGuard } from './serpapi.ts';
+import { SerpApiExplore, SerpApiFlights, SerpApiHotels, type QuotaGuard } from './serpapi.ts';
 import { TelegramBot } from './telegram.ts';
+import { CallMeBot } from './callmebot.ts';
+import { NagerHolidays } from './holidays.ts';
 import type { Providers } from './types.ts';
 import { OpenMeteo } from './weather.ts';
 import { WikimediaResearch } from './wikimedia.ts';
@@ -34,7 +36,10 @@ export function buildProviders(c: Config, budget: BudgetCheck, quota: QuotaGuard
       : new OpenAiCompatAi({ baseUrl: c.openai.baseUrl, apiKey: c.openai.apiKey, model: c.openai.model, budget, price: aiPrice }),
     research: c.research.braveApiKey ? new BraveResearch(c.research.braveApiKey) : new WikimediaResearch(c.userAgent),
     messenger: new WhatsAppCloud(c.whatsapp.token, c.whatsapp.phoneNumberId, c.whatsapp.appSecret, c.whatsapp.graphVersion),
-    mailer: new ResendMailer(c.email.resendApiKey, c.email.from, !c.isProd || c.email.logOnly),
+    mailer: chooseMailer({ brevoKey: c.email.brevoApiKey, resendKey: c.email.resendApiKey, from: c.email.from, devLog: !c.isProd || c.email.logOnly }),
     telegram: new TelegramBot(c.telegram.token, c.telegram.username, c.telegram.webhookSecret),
+    callmebot: new CallMeBot(c.callmebotEnabled),
+    holidays: new NagerHolidays(c.holidaysUrl),
+    explore: new SerpApiExplore(c.serpapi.apiKey, quota, c.serpapi.gl),
   };
 }

@@ -54,21 +54,58 @@ export async function notificationsView(root: HTMLElement) {
       field('WhatsApp number (international format)', phone),
       h('button', { class: 'secondary', on: { click: async () => { try { await post('/api/notifications/phone', { phone: phone.value.trim() }); toast('Code sent on WhatsApp'); } catch (e) { toast((e as Error).message, 'error'); } } } }, 'Send code'),
       field('Code', code), h('button', { class: 'secondary', on: { click: async () => { try { await post('/api/notifications/phone/verify', { code: code.value.trim() }); toast('Number verified'); notificationsView(root); } catch (e) { toast((e as Error).message, 'error'); } } } }, 'Verify')) : null;
+    const cmbPhone = h('input', { type: 'tel', value: ch.kind === 'callmebot' ? ch.phone ?? '' : '', placeholder: '+32470123456', autocomplete: 'tel' });
+    const cmbKey = h('input', { inputmode: 'numeric', placeholder: 'Key from the CallMeBot message', autocomplete: 'off' });
+    const cmbCode = h('input', { inputmode: 'numeric', maxlength: 6, placeholder: '6-digit code' });
+    const callmebot = ch.callmebotAvailable ? h('section', { class: 'panel' }, h('h2', null, `${ch.telegramAvailable ? 'Or: ' : '1. '}WhatsApp, free (CallMeBot)`),
+      ch.kind === 'callmebot' && ch.verified ? h('p', { class: 'notice ok' }, `Connected: ${ch.phone}`) : null,
+      h('ol', { class: 'small' },
+        h('li', null, 'Save +34 684 78 37 08 in your phone contacts (the CallMeBot number; check it on callmebot.com).'),
+        h('li', null, 'In WhatsApp, send it: I allow callmebot to send me messages'),
+        h('li', null, 'Copy the API key it replies with and enter it below with your number.')),
+      h('p', { class: 'small muted' }, 'Free for personal use. It can only message your own number, and gives no delivery receipts, so reminders show as "sent".'),
+      field('Your WhatsApp number (international format)', cmbPhone), field('CallMeBot API key', cmbKey),
+      h('button', { class: 'secondary', on: { click: async () => { try { await post('/api/notifications/callmebot', { phone: cmbPhone.value.trim(), apiKey: cmbKey.value.trim() }); toast('Code sent to your WhatsApp'); } catch (e) { toast((e as Error).message, 'error'); } } } }, 'Send test code'),
+      field('Code from WhatsApp', cmbCode),
+      h('button', { class: 'secondary', on: { click: async () => { try { await post('/api/notifications/phone/verify', { code: cmbCode.value.trim() }); toast('WhatsApp connected'); notificationsView(root); } catch (e) { toast((e as Error).message, 'error'); } } } }, 'Verify')) : null;
     const where = ch.kind === 'telegram' ? 'Telegram' : 'WhatsApp';
     replace(root, h('div', { class: 'page narrow' }, h('h1', null, 'Reminders'),
       !ch.available ? h('p', { class: 'notice info' }, 'Automatic reminders are not available yet. Nothing will be scheduled until they are.') : null,
-      telegram, whatsapp,
+      telegram, callmebot, whatsapp,
       h('section', { class: 'panel' }, h('h2', null, '2. Choose what to receive'),
         chk('pretripBriefing', 'Briefing the day before departure (flight, check-in, wake-up and leave times, stay, weather, first day)'),
         field('Send briefing at', h('input', { type: 'time', value: opts.pretripTime, on: { input: (e: Event) => (opts.pretripTime = (e.target as HTMLInputElement).value) } })),
         chk('dailySchedule', 'Each morning during the trip: that day’s schedule and food'),
         field('Send daily at (local time where you are)', h('input', { type: 'time', value: opts.dailyTime, on: { input: (e: Event) => (opts.dailyTime = (e.target as HTMLInputElement).value) } })),
         chk('shareBookingRefs', 'Include booking references in messages'),
-        h('p', { class: 'small' }, ch.kind === 'telegram' ? 'Send /stop to the bot at any time to opt out.' : 'Reply STOP at any time to opt out.'),
+        h('p', { class: 'small' }, ch.kind === 'telegram' ? 'Send /stop to the bot at any time to opt out.' : ch.kind === 'callmebot' ? 'Use “Turn off reminders” here to stop them.' : 'Reply STOP at any time to opt out.'),
         h('div', { class: 'row' },
           h('button', { class: 'primary', disabled: !ch.verified, on: { click: async () => { try { await put('/api/notifications/consent', { optIn: true, ...opts }); toast(`Reminders on (${where}) — scheduled for your upcoming trips`); notificationsView(root); } catch (e) { toast((e as Error).message, 'error'); } } } }, ch.optedIn ? 'Save settings' : 'Turn on reminders'),
           ch.optedIn ? h('button', { class: 'ghost', on: { click: async () => { await put('/api/notifications/consent', { optIn: false }); toast('Reminders turned off; scheduled messages cancelled'); notificationsView(root); } } }, 'Turn off reminders') : null))));
   } catch (e) { replace(root, errorBox(e, () => notificationsView(root))); }
+}
+
+function selfTestPanel() {
+  const out = h('div', { 'aria-live': 'polite' });
+  const serp = h('input', { type: 'checkbox' }) as HTMLInputElement;
+  const mail = h('input', { type: 'checkbox' }) as HTMLInputElement;
+  const run = async (e: Event) => {
+    const b = e.target as HTMLButtonElement; b.disabled = true;
+    replace(out, loading('Testing every service from the server… (up to a minute)'));
+    try {
+      const r = await post('/api/admin/selftest', { serpapiSearch: serp.checked, sendEmail: mail.checked });
+      const icon: Record<string, [string, 'ok' | 'bad' | 'muted']> = { ok: ['Works', 'ok'], failed: ['Problem', 'bad'], skipped: ['Skipped', 'muted'] };
+      replace(out, h('p', null, badge(r.summary, r.results.some((x: any) => x.status === 'failed') ? 'bad' : 'ok')),
+        h('div', { class: 'table-wrap' }, h('table', null, h('thead', null, h('tr', null, ...['Service', 'Result', 'Details', 'Time'].map((x) => h('th', { scope: 'col' }, x)))),
+          h('tbody', null, ...r.results.map((x: any) => h('tr', null, h('td', null, h('strong', null, x.name)), h('td', null, badge(...icon[x.status])),
+            h('td', { class: 'small' }, x.detail, x.status === 'failed' && x.fix ? h('div', { class: 'muted' }, `Setting to check: ${x.fix}`) : null), h('td', { class: 'small mono' }, x.ms ? `${x.ms} ms` : '—')))))));
+    } catch (err) { replace(out, errorBox(err)); } finally { b.disabled = false; }
+  };
+  return h('section', { class: 'panel' }, h('h2', null, 'Self-test'),
+    h('p', { class: 'small' }, 'Calls each live service once from the server and shows exactly what works. Free; nothing is booked.'),
+    h('label', { class: 'check' }, serp, ' Include a live flight search (uses 1 of your free SerpApi searches)'),
+    h('label', { class: 'check' }, mail, ' Send me a test email (to my own address)'),
+    h('div', { class: 'actions' }, h('button', { class: 'primary', on: { click: run } }, 'Run self-test')), out);
 }
 
 export async function adminView(root: HTMLElement) {
@@ -76,7 +113,7 @@ export async function adminView(root: HTMLElement) {
   try {
     const [ready, usage, notif, errs, health, stats] = await Promise.all(['readiness', 'usage', 'notifications', 'errors', 'health', 'stats'].map((p) => get(`/api/admin/${p}`)));
     const statusBadge = (i: any) => i.status === 'configured' ? (i.verifiedLive ? badge('Configured · verified live', 'ok') : badge('Configured · not yet verified live', 'warn')) : i.status === 'disabled' ? badge('Disabled', 'muted') : badge('Awaiting credentials', 'bad');
-    replace(root, h('div', { class: 'page wide' }, h('h1', null, 'Administration'),
+    replace(root, h('div', { class: 'page wide' }, h('h1', null, 'Administration'), selfTestPanel(),
       h('section', { class: 'panel' }, h('h2', null, 'Service health'), h('p', null, health.ok ? badge('Healthy', 'ok') : badge('Degraded', 'bad'), ` DB latency ${health.dbLatencyMs} ms · jobs overdue ${health.jobs?.overdue ?? '?'} · running ${health.jobs?.running ?? '?'} · dead (24h) ${health.jobs?.dead24h ?? '?'}`),
         h('p', { class: 'small' }, `Users ${stats.users} · trips ${stats.trips} · complete plans ${stats.complete_plans} · delivered messages ${stats.delivered_notifications} · provider-confirmed bookings ${stats.completed_bookings}`)),
       h('section', { class: 'panel' }, h('h2', null, 'Integration readiness'), h('p', { class: 'small' }, '“Verified live” means this deployment has recorded at least one successful call to the provider. Secrets are never shown here; set them in the platform secret manager.'),

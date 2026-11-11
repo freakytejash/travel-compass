@@ -379,6 +379,7 @@ export class Pool implements Queryable {
 
   private release(c: PgConnection) {
     if (c.closed) { this.total--; return; }
+    if (this.ended) { this.total--; c.end(); return; } // busy when the pool was shut down: close it now
     const w = this.waiters.shift();
     if (w) w(c); else this.idle.push(c);
   }

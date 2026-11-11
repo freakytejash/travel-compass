@@ -4,10 +4,11 @@ import { extLink, fmtDate, fmtDateTime, fmtMoney, h, hrs, replace, toast } from 
 import { badge, errorBox, field, loading, placePicker } from '../components.ts';
 import { navigate } from '../app.ts';
 import { bookingPanel } from './booking.ts';
+import { bookTab } from './book.ts';
 import type { Place } from '../../shared/types.ts';
 
-type Tab = 'plan' | 'discover' | 'flights' | 'stays' | 'flex' | 'bookings' | 'reminders';
-const TABS: [Tab, string][] = [['plan', 'Itinerary'], ['discover', 'Destinations'], ['flights', 'Flights'], ['stays', 'Stays'], ['flex', 'Flexible dates'], ['bookings', 'Bookings'], ['reminders', 'Reminders']];
+type Tab = 'book' | 'plan' | 'discover' | 'flights' | 'stays' | 'flex' | 'bookings' | 'reminders';
+const TABS: [Tab, string][] = [['book', 'Book everything'], ['plan', 'Itinerary'], ['discover', 'Destinations'], ['flights', 'Flights'], ['stays', 'Stays'], ['flex', 'Flexible dates'], ['bookings', 'Bookings'], ['reminders', 'Reminders']];
 
 export async function tripView(root: HTMLElement, id: string) {
   const q = new URLSearchParams(location.search);
@@ -30,7 +31,7 @@ export async function tripView(root: HTMLElement, id: string) {
   const refresh = async () => { await load(); renderHeader(); renderBody(); };
   const renderBody = () => {
     const ctx = { id, detail, refresh, root: body };
-    const map: Record<Tab, (c: typeof ctx) => void> = { plan: planTab, discover: discoverTab, flights: flightsTab, stays: staysTab, flex: flexTab, bookings: bookingsTab, reminders: remindersTab };
+    const map: Record<Tab, (c: typeof ctx) => void> = { book: (x) => bookTab(x), plan: planTab, discover: discoverTab, flights: flightsTab, stays: staysTab, flex: flexTab, bookings: bookingsTab, reminders: remindersTab };
     replace(body, loading()); map[tab](ctx);
   };
   replace(root, h('div', { class: 'page wide' }, header, tabs, body));
@@ -274,7 +275,7 @@ function flexTab(c: TabCtx) {
 }
 
 function discoverTab(c: TabCtx) {
-  searchPanel(c, 'destinations', 'Destination ideas', 'Ideas suggested by AI from your interests, then checked against live flight and accommodation prices and weather (forecast where available, otherwise historical climate — always labelled).', (s, out) => {
+  searchPanel(c, 'destinations', 'Destination ideas', 'The cheapest destinations for your dates from every airport near you, with Google flight and hotel prices and the weather (forecast where available, otherwise typical climate — always labelled). Uses one live search.', (s, out) => {
     if (s.status === 'failed') { replace(out, errorBox(new Error(s.error ?? 'No destinations could be verified'))); return; }
     const r = s.result;
     replace(out, searchMeta(s), h('p', { class: 'small' }, r.note), h('div', { class: 'offer-grid' }, ...r.destinations.map((d: any) => h('article', { class: 'offer' },
@@ -283,7 +284,9 @@ function discoverTab(c: TabCtx) {
       h('ul', { class: 'small' }, ...d.reasons.map((x: string) => h('li', null, x))), d.caveats.length ? h('p', { class: 'uncertainty' }, d.caveats.join(' ')) : null,
       h('button', { class: 'secondary', on: { click: async () => {
         const t = c.detail.trip;
-        try { await patch(`/api/trips/${c.id}`, { version: t.version, changes: { title: t.title === 'New trip' ? `Trip to ${d.place.name}` : t.title, stops: [{ place: d.place, arriveDate: t.startDate, departDate: t.endDate }] } }); toast(`${d.place.name} added`); await c.refresh(); navigate(`/trips/${c.id}?tab=flights`); } catch (e) { toast((e as Error).message, 'error'); }
+        try { await patch(`/api/trips/${c.id}`, { version: t.version, changes: { title: t.title === 'New trip' ? `Trip to ${d.place.name}` : t.title, stops: [{ place: d.place, arriveDate: t.startDate, departDate: t.endDate }] } }); toast(`${d.place.name} added — fetching flights and stays`);
+          for (const kind of ['flight', 'stay']) await post(`/api/trips/${c.id}/searches`, { kind }).catch(() => null);
+          await c.refresh(); navigate(`/trips/${c.id}?tab=book`); } catch (e) { toast((e as Error).message, 'error'); }
       } } }, 'Choose this destination')))));
   });
 }

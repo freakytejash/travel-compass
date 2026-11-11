@@ -17,8 +17,9 @@ export async function getChannel(ctx: AppContext, userId: string) {
   const c = r.rows[0];
   const whatsappAvailable = ctx.providers.messenger.configured();
   const telegramAvailable = !!ctx.providers.telegram?.configured();
-  const available = whatsappAvailable || telegramAvailable;
-  const base = { available, whatsappAvailable, telegramAvailable, telegramBot: telegramAvailable ? ctx.providers.telegram!.botUsername() : null };
+  const callmebotAvailable = !!ctx.providers.callmebot?.configured() && !!ctx.sealer;
+  const available = whatsappAvailable || telegramAvailable || callmebotAvailable;
+  const base = { available, whatsappAvailable, telegramAvailable, callmebotAvailable, telegramBot: telegramAvailable ? ctx.providers.telegram!.botUsername() : null };
   if (!c) return { ...base, kind: null, phone: null, verified: false, optedIn: false };
   return { ...base, kind: c.kind, telegramConnected: c.kind === 'telegram' && !!c.telegram_chat_id, phone: c.phone_e164, verified: !!c.verified_at, optedIn: !!c.opted_in_at && !c.opted_out_at, shareBookingRefs: c.share_booking_refs, pretripBriefing: c.pretrip_briefing, dailySchedule: c.daily_schedule, dailyTime: c.daily_time, pretripTime: c.pretrip_time };
 }
@@ -211,6 +212,14 @@ export async function sendNotificationJob(ctx: AppContext, p: { notificationId: 
         if (!params) { await ctx.db.query(`UPDATE notifications SET status='cancelled', last_error='No itinerary for this day', updated_at=now() WHERE id=$1`, [n.id]); return; }
       }
     }
+    if (ch.kind === 'callmebot') {
+      if (!ctx.providers.callmebot?.configured() || !ch.callmebot_key_enc || !ctx.sealer) throw new Error('WhatsApp (CallMeBot) is not connected');
+      const text = renderTemplate(n.kind, params, 'callmebot');
+      const r = await ctx.providers.callmebot.send(ch.phone_e164, ctx.sealer.open(ch.callmebot_key_enc), text, n.user_id);
+      // CallMeBot gives no delivery receipts, so this stays "sent", never "delivered".
+      await ctx.db.query(`UPDATE notifications SET status='sent', provider_message_id=$2, status_updated_at=now(), last_error=NULL, body_preview=$3, updated_at=now() WHERE id=$1`, [n.id, r.messageId, text.slice(0, 500)]);
+      return;
+    }
     if (ch.kind === 'telegram') {
       if (!ctx.providers.telegram?.configured() || !ch.telegram_chat_id) throw new Error('Telegram is not connected');
       const text = renderTemplate(n.kind, params);
@@ -258,11 +267,12 @@ export async function listNotifications(ctx: AppContext, userId: string, tripId?
 
 // ---------------------------------------------------------------- Telegram (free channel)
 /** Text versions of the message templates (Telegram needs no template approval). */
-export function renderTemplate(kind: string, p: string[]): string {
+export function renderTemplate(kind: string, p: string[], channel: 'telegram' | 'callmebot' = 'telegram'): string {
+  const stop = channel === 'telegram' ? 'Send /stop to stop reminders.' : 'Turn reminders off in Travel Compass → Reminders.';
   if (kind === 'pretrip_briefing') return [
     `Hi ${p[0]}, your trip (${p[1]}) starts tomorrow.`, '', `Flight: ${p[2]}`, `Check-in: ${p[3]}`, `Wake up ${p[4]}, leave home ${p[5]}.`, `Transfer: ${p[6]}`,
-    `Stay: ${p[7]}`, `Weather: ${p[8]}`, '', `Day 1: ${p[9]}`, `Food: ${p[10]}`, '', 'Send /stop to stop reminders.'].join('\n');
-  if (kind === 'daily_schedule') return [`Good morning ${p[0]}! ${p[1]} in ${p[2]}:`, p[3].split(' · ').join('\n'), '', `Weather: ${p[4]}`, p[5], '', 'Send /stop to stop reminders.'].join('\n');
+    `Stay: ${p[7]}`, `Weather: ${p[8]}`, '', `Day 1: ${p[9]}`, `Food: ${p[10]}`, '', stop].join('\n');
+  if (kind === 'daily_schedule') return [`Good morning ${p[0]}! ${p[1]} in ${p[2]}:`, p[3].split(' · ').join('\n'), '', `Weather: ${p[4]}`, p[5], '', stop].join('\n');
   return p.join('\n');
 }
 
@@ -316,4 +326,21 @@ export async function pollTelegram(ctx: AppContext) {
     }
     return updates.length;
   });
+}
+
+// ---------------------------------------------------------------- WhatsApp via CallMeBot (free, personal)
+/** Saves the customer's own CallMeBot key (encrypted) and proves it works by sending a 6-digit code to their WhatsApp. */
+export async function startCallMeBot(ctx: AppContext, userId: string, phone: string, apiKey: string) {
+  if (!E164.test(phone)) throw new HttpError(400, 'invalid_input', 'Enter the number in international format, e.g. +32470123456.');
+  if (!/^[A-Za-z0-9]{4,40}$/.test(apiKey)) throw new HttpError(400, 'invalid_input', 'The CallMeBot API key is the number or code the bot sent you.');
+  if (!ctx.providers.callmebot?.configured() || !ctx.sealer) throw new HttpError(503, 'service_unavailable', 'WhatsApp via CallMeBot is not available.');
+  const recent = await ctx.db.query<{ n: number }>(`SELECT count(*)::int AS n FROM provider_usage WHERE provider='callmebot' AND user_id=$1 AND created_at > $2`, [userId, new Date(ctx.now().getTime() - 3600_000)]);
+  if (recent.rows[0].n >= 5) throw new HttpError(429, 'rate_limited', 'Too many codes requested. Try again in an hour.');
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+  await ctx.providers.callmebot.send(phone, apiKey, `Your Travel Compass code is ${code}. It expires in 10 minutes.`, userId);
+  await ctx.db.query(`INSERT INTO notification_channels(user_id, kind, phone_e164, callmebot_key_enc, verification_code_hash, code_expires_at, verify_attempts)
+    VALUES ($1,'callmebot',$2,$3,$4,$5,0)
+    ON CONFLICT (user_id) DO UPDATE SET kind='callmebot', phone_e164=EXCLUDED.phone_e164, callmebot_key_enc=EXCLUDED.callmebot_key_enc, telegram_chat_id=NULL, link_token_hash=NULL,
+      verification_code_hash=EXCLUDED.verification_code_hash, code_expires_at=EXCLUDED.code_expires_at, verify_attempts=0, verified_at=NULL, opted_in_at=NULL, updated_at=now()`,
+    [userId, phone, ctx.sealer.seal(apiKey), sha256(`${userId}:${code}`), new Date(ctx.now().getTime() + 10 * 60000)]);
 }

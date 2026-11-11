@@ -21,6 +21,10 @@ export interface FlightProvider {
   getOffer(offerId: string, currency: string): Promise<FlightOffer | null>;
   /** Provider-specific booking handoff (used when the provider is not the checkout provider). */
   handoff?(offer: FlightOffer): Promise<Handoff>;
+  /** True when one search can take several comma-separated departure airports. */
+  multiAirport?: boolean;
+  nearbyAirports?(lat: number, lng: number, radiusKm: number, max: number): Promise<{ iata: string; name: string; lat: number; lng: number }[]>;
+  airportInfo?(iata: string): Promise<{ iata: string; name: string; lat: number; lng: number; city: string; country: string } | null>;
 }
 
 export interface StaySearchRequest {
@@ -144,4 +148,7 @@ export interface Providers {
   messenger: Messenger;
   mailer: Mailer;
   telegram?: ChatMessenger;
+  callmebot?: { configured(): boolean; send(phone: string, apiKey: string, text: string, userId?: string | null): Promise<{ messageId: string }> };
+  holidays?: { configured(): boolean; publicHolidays(year: number, country: string): Promise<{ date: string; name: string; localName: string; countryCode: string; global: boolean }[]>; longWeekends(year: number, country: string): Promise<{ startDate: string; endDate: string; dayCount: number; needBridgeDay: boolean }[]> };
+  explore?: { configured(): boolean; explore(req: { departureIds: string[]; outboundDate: string; returnDate: string; currency: string; adults: number; userId?: string | null; maxPrice?: number | null }): Promise<{ destinations: import('./serpapi.ts').ExploreDestination[]; searchUrl: string | null }> };
 }

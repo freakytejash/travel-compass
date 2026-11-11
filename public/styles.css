@@ -149,3 +149,28 @@ dialog.booking header { display: flex; justify-content: space-between; align-ite
 .traveller { margin-top: .8rem; }
 .manual { align-items: end; }
 @media (max-width: 640px) { header.site { position: static; } }
+
+/* ---- dashboard, trip ideas, book everything ---- */
+.hero h1 { font-size: clamp(1.6rem, 4.5vw, 2.4rem); }
+.hero .actions, .idea-card .actions, .book-options .actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .8rem; }
+.window-grid, .idea-grid { list-style: none; padding: 0; margin: .6rem 0 1.2rem; display: grid; gap: .8rem; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.window-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: .9rem 1rem; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: .3rem; }
+.window-card h3 { font-size: 1.05rem; margin: 0; }
+.window-card .button, .window-card .chip { align-self: flex-start; margin-top: auto; }
+.eyebrow { color: var(--muted); font-size: .78rem; margin: 0; text-transform: uppercase; letter-spacing: .04em; }
+.idea-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.idea-card img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; background: var(--line); }
+.idea-body { padding: .9rem 1rem 1rem; display: flex; flex-direction: column; gap: .2rem; flex: 1; }
+.idea-body h3 { margin: .2rem 0; font-size: 1.15rem; }
+.price-line { margin: .2rem 0; font-size: 1.3rem; font-family: var(--mono); }
+.reasons, .caveats { margin: .3rem 0; padding-left: 1.1rem; }
+.reasons li::marker { content: "✓ "; color: var(--ok); }
+.caveats li { color: var(--warn); }
+.steps { padding-left: 1.2rem; } .steps li { margin: .35rem 0; }
+.book-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 1rem; }
+.book-item { border-top: 1px solid var(--line); padding-top: .9rem; }
+.book-item:first-child { border-top: 0; padding-top: 0; }
+.book-item h3 { font-size: 1.05rem; margin: 0; }
+.book-options { display: grid; gap: .7rem; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); margin: .6rem 0; }
+.links a { white-space: nowrap; }
+@media (max-width: 520px) { header.site nav { gap: .6rem; font-size: .92rem; } .window-grid, .idea-grid { grid-template-columns: 1fr; } }

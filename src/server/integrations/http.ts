@@ -6,8 +6,9 @@ export class NotConfiguredError extends Error {
   constructor(provider: string, missing: string[]) {
     super(`${provider} is not configured (missing ${missing.join(', ')})`);
     this.name = 'NotConfiguredError';
-    this.provider = provider;
+    this.provider = provider; this.missing = missing;
   }
+  missing: string[];
 }
 
 export class ProviderError extends Error {
@@ -46,6 +47,8 @@ export interface RequestOpts {
   userId?: string | null;
   /** Only idempotent operations are retried by default. */
   idempotent?: boolean;
+  /** Return the raw response body instead of parsing JSON (for non-JSON APIs). */
+  text?: boolean;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -81,6 +84,7 @@ export async function requestJson<T>(url: string, o: RequestOpts): Promise<T> {
         throw new ProviderError(o.provider, `HTTP ${res.status} on ${o.operation}`, res.status, retryable, text.slice(0, 500));
       }
       recordUsage({ provider: o.provider, operation: o.operation, status: 'ok', httpStatus: res.status, latencyMs, userId: o.userId });
+      if (o.text) return text as unknown as T;
       return (text ? JSON.parse(text) : {}) as T;
     } catch (e) {
       if (e instanceof ProviderError) throw e;
@@ -114,4 +118,28 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T, i: nu
 export class QuotaExceededError extends Error {
   provider: string;
   constructor(provider: string, message: string) { super(message); this.name = 'QuotaExceededError'; this.provider = provider; }
+}
+
+const PROVIDER_LABEL: Record<string, [string, string]> = {
+  serpapi: ['Google Flights (SerpApi)', 'SERPAPI_API_KEY'], serpapi_google_hotels: ['Google Hotels (SerpApi)', 'SERPAPI_API_KEY'],
+  openai_compatible: ['the AI service (Groq)', 'AI_API_KEY'], groq: ['the AI service (Groq)', 'AI_API_KEY'], ai: ['the AI service', 'AI_API_KEY'], anthropic: ['the AI service (Anthropic)', 'ANTHROPIC_API_KEY'],
+  photon: ['the place search (Photon)', ''], overpass: ['OpenStreetMap venue search', ''], openstreetmap: ['OpenStreetMap venue search', ''], wikimedia: ['Wikivoyage', ''],
+  open_meteo: ['the weather service (Open-Meteo)', ''], nager_date: ['the public-holiday service', ''], brevo: ['Brevo email', 'BREVO_API_KEY'], resend: ['Resend email', 'RESEND_API_KEY'],
+  duffel: ['Duffel flights', 'DUFFEL_ACCESS_TOKEN'], google_places: ['Google Places', 'GOOGLE_MAPS_API_KEY'], brave_search: ['Brave Search', 'BRAVE_SEARCH_API_KEY'],
+};
+
+/** Customer-safe explanation of a provider failure: which service, and what to do. Never includes keys or response bodies. */
+export function explainFailure(e: unknown, fallback = 'A travel data service did not respond. Please retry.'): string {
+  if (e instanceof QuotaExceededError) return e.message;
+  if (e instanceof NotConfiguredError) return `This needs ${e.provider} to be set up first (missing in Render → Environment: ${e.missing.join(', ')}).`;
+  if (!(e instanceof ProviderError)) return fallback;
+  const [label, key] = PROVIDER_LABEL[e.provider] ?? [e.provider, ''];
+  const s = e.status;
+  const detail = /serpapi/.test(e.provider) && e.status === 200 ? ` It said: ${e.message.replace(/^[^:]+:\s*/, '').slice(0, 140)}` : '';
+  if (s === 401 || s === 403) return `${label} rejected the request (HTTP ${s}).${key ? ` Check ${key} in Render → Environment — a deleted or mistyped key causes this.` : ''}`;
+  if (s === 429) return `${label} is rate-limiting us (HTTP 429). Wait a minute and retry.`;
+  if (s && s >= 500) return `${label} had a temporary problem (HTTP ${s}). Please retry in a minute.`;
+  if (/timeout/i.test(e.message)) return `${label} took too long to answer. Please retry.`;
+  if (/invalid JSON/.test(e.message)) return `${label} sent an answer we couldn't read. Please retry.`;
+  return `${label} failed${s ? ` (HTTP ${s})` : ''}.${detail} Please retry.`;
 }
