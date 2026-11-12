@@ -193,3 +193,16 @@ test('admin self-test reports each live service, and can send a real test email'
   assert.ok(brevoSent.some((m) => m.to[0].email === 'admin@example.com' && /test email/i.test(m.subject)));
   assert.ok(!JSON.stringify(r.body).includes('serp_test') && !JSON.stringify(r.body).includes('xkeysib'), 'keys never shown');
 });
+
+test('a search left "running" by a redeploy is marked interrupted instead of spinning forever', async () => {
+  const t = await c.post('/api/trips', { title: 'Stale', origin: BRUSSELS, adults: 1, startDate: '2027-12-17', endDate: '2027-12-20', stops: [] });
+  const r = await h.ctx.db.query<{ id: string }>(`INSERT INTO searches(trip_id, kind, status, params, created_at) VALUES ($1,'destinations','running','{}', now() - interval '30 minutes') RETURNING id`, [t.body.id]);
+  const list = (await c.get(`/api/trips/${t.body.id}/searches`)).body;
+  assert.equal(list.find((x: any) => x.id === r.rows[0].id).status, 'failed');
+  const s = (await c.get(`/api/searches/${r.rows[0].id}`)).body;
+  assert.match(s.error, /interrupted/);
+  // A fresh running search with a live job is left alone.
+  const fresh = await c.post(`/api/trips/${t.body.id}/searches`, { kind: 'destinations' });
+  assert.equal((await c.get(`/api/searches/${fresh.body.searchId}`)).body.status, 'running');
+  await h.worker.drain();
+});

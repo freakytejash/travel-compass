@@ -11,10 +11,17 @@ const STATUS: Record<string, [string, 'ok' | 'warn' | 'bad' | 'info' | 'muted']>
 };
 const ROLE: Record<string, string> = { recommended: 'Best value', cheapest: 'Cheapest', convenient: 'Most convenient', comfortable: 'Most comfortable' };
 
-export async function bookTab(c: { id: string; refresh: () => Promise<void>; root: HTMLElement }) {
+export async function bookTab(c: { id: string; detail: any; refresh: () => Promise<void>; root: HTMLElement; alive: () => boolean }) {
   const root = c.root;
   let polls = 0;
+  if (!c.detail.stops?.length) {
+    replace(root, h('section', { class: 'panel' }, h('h2', null, 'Choose where to go first'),
+      h('p', null, 'This trip has no destination yet. Pick one on the Destinations tab (cheapest places from every airport near you), or add a stop on the Itinerary tab. Then everything to book appears here.'),
+      h('a', { class: 'button primary', href: `/trips/${c.id}?tab=discover` }, 'Find destinations')));
+    return;
+  }
   const load = async (): Promise<void> => {
+    if (!c.alive()) return;
     let plan: any; let running = false;
     try {
       const [p, s] = await Promise.all([get(`/api/trips/${c.id}/book`), get(`/api/trips/${c.id}/searches`).catch(() => [])]);
@@ -50,7 +57,7 @@ export async function bookTab(c: { id: string; refresh: () => Promise<void>; roo
               o.link ? extLink(o.link, 'View') : null)))) : null,
           it.note ? h('p', { class: 'small' }, it.note) : null,
           it.links.length ? h('p', { class: 'links small' }, 'Compare: ', ...it.links.flatMap((l: any, i: number) => [i ? ' · ' : '', extLink(l.url, l.label)])) : null))))));
-    if (running && polls++ < 40) setTimeout(() => { if (root.isConnected) void load(); }, 4000);
+    if (running && polls++ < 30) setTimeout(() => { if (c.alive()) void load(); }, 6000);
   };
   replace(root, loading('Collecting everything you need to book…'));
   await load();

@@ -160,6 +160,7 @@ export function createApp(ctx: AppContext) {
   }, { auth: 'user', rate: 'expensive' });
   r.get('/api/trips/:id/searches', async (c) => {
     await trips.getOwnedTrip(ctx, c.user!.id, c.params.id);
+    await searches.expireStale(ctx.db);
     const rows = await ctx.db.query<any>(`SELECT DISTINCT ON (kind) id, kind, status, created_at FROM searches WHERE trip_id=$1 ORDER BY kind, created_at DESC`, [c.params.id]);
     return rows.rows;
   }, { auth: 'user' });

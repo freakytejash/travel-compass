@@ -4,7 +4,7 @@ Run: `npm test` (needs PostgreSQL at `TEST_DATABASE_URL`; the integration suite 
 
 **All automated tests use mocked providers** (`test/helpers/mocks.ts`) or simulated provider HTTP responses. They prove the application logic, persistence, security rules and failure handling — not that any live provider works. Live verification is done per deployment with `npm run check:integrations` and the manual journey in ADMIN_CHECKLIST.md §11.
 
-Last run (2026-11-11, Node 22.23, PostgreSQL 16): **94 tests, 94 passed, 0 failed**, plus a browser walkthrough in headless Chrome at phone size (dashboard signed out → sign in → trip ideas → choose → Book everything → new trip date logic → Suggest destinations → Admin self-test) against the simulated network, with no page errors. New tests: `test/unit/ideas.test.ts`, `test/integration/ideas-book.test.ts` (incl. Brevo sign-up email, the Charleroi journey, named failure messages, admin self-test).
+Last run (2026-11-11, Node 22.23, PostgreSQL 16): **95 tests, 95 passed, 0 failed**, plus a browser walkthrough in headless Chrome at phone size (dashboard signed out → sign in → trip ideas → choose → Book everything → new trip date logic → Suggest destinations → Admin self-test) against the simulated network, with no page errors. New tests: `test/unit/ideas.test.ts`, `test/integration/ideas-book.test.ts` (incl. Brevo sign-up email, the Charleroi journey, named failure messages, admin self-test).
 
 **Live check after each deploy:** sign in as admin → **Admin → Run self-test**. It calls every configured service from the server and shows which work and which setting to fix.
 

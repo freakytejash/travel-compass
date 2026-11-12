@@ -36,7 +36,17 @@ function preflight(trip: Trip, stops: Stop[], kind: SearchKind) {
   if (kind === 'flex') need(trip.flexDays > 0, 'Set date flexibility (±1 to ±3 days) to compare dates.');
 }
 
+/** Searches/ideas still "running" long after any job could be working on them were interrupted (e.g. a redeploy). */
+export async function expireStale(db: AppContext['db']) {
+  const msg = 'This search was interrupted (the server restarted). Please search again.';
+  await db.query(`UPDATE searches s SET status='failed', error=$1, finished_at=now() WHERE status='running' AND created_at < now() - interval '12 minutes'
+    AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.status IN ('queued','running') AND j.payload->>'searchId' = s.id::text)`, [msg]);
+  await db.query(`UPDATE trip_ideas i SET status='failed', error=$1, finished_at=now() WHERE status='running' AND created_at < now() - interval '12 minutes'
+    AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.status IN ('queued','running') AND j.payload->>'ideaId' = i.id::text)`, [msg]);
+}
+
 export async function getSearch(ctx: AppContext, userId: string, searchId: string) {
+  await expireStale(ctx.db);
   const r = await ctx.db.query<any>('SELECT s.* FROM searches s JOIN trips t ON t.id=s.trip_id WHERE s.id=$1 AND t.user_id=$2', [searchId, userId]);
   if (!r.rows.length) throw new HttpError(404, 'not_found', 'Search not found');
   const s = r.rows[0];

@@ -47,6 +47,7 @@ export async function startIdeas(ctx: AppContext, userId: string, p: Omit<IdeaPa
 }
 
 export async function getIdeas(ctx: AppContext, userId: string, id: string) {
+  await searches.expireStale(ctx.db);
   const r = await ctx.db.query<any>('SELECT * FROM trip_ideas WHERE id=$1 AND user_id=$2', [id, userId]);
   if (!r.rows.length) throw new HttpError(404, 'not_found', 'Trip ideas not found');
   const x = r.rows[0];

@@ -1,3 +1,4 @@
+import { expireStale } from '../services/searches.ts';
 // Background worker and scheduler. Runs in-process (RUN_WORKER_IN_PROCESS=true) or as a separate process.
 import type { AppContext } from '../context.ts';
 import { recordError } from '../context.ts';
@@ -59,6 +60,7 @@ async function onDead(ctx: AppContext, job: Job, e: Error) {
 
 export async function housekeeping(ctx: AppContext) {
   const r = ctx.cfg.retentionDays;
+  await expireStale(ctx.db);
   await ctx.db.query(`DELETE FROM sessions WHERE expires_at < now()`);
   await ctx.db.query(`DELETE FROM email_tokens WHERE expires_at < now() - interval '7 days'`);
   await ctx.db.query(`DELETE FROM oauth_states WHERE expires_at < now()`);

@@ -29,8 +29,11 @@ export async function tripView(root: HTMLElement, id: string) {
   };
   const renderTabs = () => replace(tabs, ...TABS.map(([k, l]) => h('button', { role: 'tab', 'aria-selected': String(k === tab), class: k === tab ? 'active' : '', on: { click: () => { tab = k; history.replaceState(null, '', `/trips/${id}?tab=${k}`); renderTabs(); renderBody(); } } }, l)));
   const refresh = async () => { await load(); renderHeader(); renderBody(); };
+  let gen = 0;
   const renderBody = () => {
-    const ctx = { id, detail, refresh, root: body };
+    // Each render gets a generation; background polling from an older render (other tab, page left) stops itself.
+    const mine = ++gen;
+    const ctx = { id, detail, refresh, root: body, alive: () => mine === gen && body.isConnected };
     const map: Record<Tab, (c: typeof ctx) => void> = { book: (x) => bookTab(x), plan: planTab, discover: discoverTab, flights: flightsTab, stays: staysTab, flex: flexTab, bookings: bookingsTab, reminders: remindersTab };
     replace(body, loading()); map[tab](ctx);
   };
@@ -44,7 +47,7 @@ export async function tripView(root: HTMLElement, id: string) {
   }
 }
 
-interface TabCtx { id: string; detail: any; refresh: () => Promise<void>; root: HTMLElement }
+interface TabCtx { id: string; detail: any; refresh: () => Promise<void>; root: HTMLElement; alive: () => boolean }
 
 // ---------------------------------------------------------------- stops editor + itinerary
 function stopsEditor(c: TabCtx) {
@@ -109,8 +112,9 @@ function planTab(c: TabCtx) {
 }
 
 async function pollPlan(c: TabCtx) {
-  for (let i = 0; i < 120; i++) {
-    await new Promise((r) => setTimeout(r, 2500));
+  for (let i = 0; i < 100; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+    if (!c.alive()) return;
     const d = await get(`/api/trips/${c.id}`);
     if (d.trip.planStatus !== 'generating') { await c.refresh(); return; }
   }
@@ -160,14 +164,15 @@ function itemRow(c: TabCtx, d: any, it: any, otherDays: any[]) {
 }
 
 // ---------------------------------------------------------------- searches
-async function runSearch(c: TabCtx, kind: string, out: HTMLElement, render: (s: any) => void) {
-  replace(out, loading(kind === 'flex' ? 'Comparing date combinations with live quotes… this can take a few minutes' : 'Fetching live offers…'));
+async function runSearch(c: TabCtx, kind: string, out: HTMLElement, render: (s: any) => void, existingId?: string) {
+  replace(out, loading(kind === 'flex' ? 'Comparing date combinations with live quotes… this can take a few minutes' : kind === 'destinations' ? 'Searching the cheapest destinations from every airport near you… (usually 10–40 seconds)' : 'Fetching live offers…'));
   try {
-    const { searchId } = await post(`/api/trips/${c.id}/searches`, { kind });
-    const s = await waitForSearch(searchId, undefined, kind === 'flex' ? 600000 : 180000);
+    // Resume a search that is already running instead of starting (and paying for) another one.
+    const searchId = existingId ?? (await post(`/api/trips/${c.id}/searches`, { kind })).searchId;
+    const s = await waitForSearch(searchId, undefined, kind === 'flex' ? 600000 : 180000, c.alive);
+    if (!s || !c.alive()) return;
     await c.refresh();
-    render(s);
-  } catch (e) { replace(out, errorBox(e, () => runSearch(c, kind, out, render))); }
+  } catch (e) { if (c.alive()) replace(out, errorBox(e, () => runSearch(c, kind, out, render))); }
 }
 
 async function latest(c: TabCtx, kind: string) {
@@ -180,7 +185,7 @@ function searchPanel(c: TabCtx, kind: string, title: string, intro: string, rend
   const out = h('div');
   const btn = h('button', { class: 'primary', on: { click: () => runSearch(c, kind, out, (s) => render(s, out)) } }, 'Search live prices');
   replace(c.root, h('section', { class: 'panel' }, h('div', { class: 'panel-head' }, h('h2', null, title), btn), h('p', { class: 'hint' }, intro), out));
-  latest(c, kind).then((s) => { if (s) { if (s.status === 'running') runSearch(c, kind, out, (x) => render(x, out)); else render(s, out); } else replace(out); }).catch((e) => replace(out, errorBox(e)));
+  latest(c, kind).then((s) => { if (!c.alive()) return; if (s) { if (s.status === 'running') runSearch(c, kind, out, (x) => render(x, out), s.id); else render(s, out); } else replace(out); }).catch((e) => { if (c.alive()) replace(out, errorBox(e)); });
 }
 
 function searchMeta(s: any) {

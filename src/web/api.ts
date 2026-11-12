@@ -35,13 +35,14 @@ export const patch = <T = any>(p: string, b: unknown) => api<T>('PATCH', p, b);
 export const del = <T = any>(p: string) => api<T>('DELETE', p);
 
 /** Polls a search until it finishes. */
-export async function waitForSearch(id: string, onTick?: (s: any) => void, timeoutMs = 120000) {
+export async function waitForSearch(id: string, onTick?: (s: any) => void, timeoutMs = 120000, alive: () => boolean = () => true) {
   const start = Date.now();
   for (;;) {
+    if (!alive()) return null; // the user moved on: stop polling
     const s = await get(`/api/searches/${id}`);
     onTick?.(s);
     if (s.status !== 'running') return s;
     if (Date.now() - start > timeoutMs) throw new ApiError(0, 'timeout', 'The search is taking longer than expected. It will keep running; check back shortly.', true, null);
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, Date.now() - start < 20000 ? 2000 : 4000));
   }
 }
