@@ -2,10 +2,16 @@ name: Deploy to Render
 on:
   push:
     branches: [main]
+  workflow_dispatch: {}
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - run: curl -fsS -X POST "$HOOK"
+      - name: Trigger Render deploy
         env:
           HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          HOOK="$(printf '%s' "$HOOK" | tr -d '[:space:]"')"
+          if [ -z "$HOOK" ]; then echo "::error::Secret RENDER_DEPLOY_HOOK is missing or empty (repo Settings → Secrets and variables → Actions)"; exit 1; fi
+          case "$HOOK" in https://api.render.com/deploy/*) ;; *) echo "::error::RENDER_DEPLOY_HOOK should start with https://api.render.com/deploy/"; exit 1;; esac
+          curl -fsS -X POST "$HOOK" > /dev/null && echo "Render deploy triggered"
